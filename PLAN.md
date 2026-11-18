@@ -1,0 +1,150 @@
+# Firefly — Phase 1 (MVP) plan
+
+A self-hosted personal agent on a Mac mini, controlled from Telegram. Phase 1 delivers a
+Telegram chat with a Pi agent that runs shell and file tasks inside a network-isolated sandbox
+container, asking the owner for approval before anything risky.
+
+## 1. Review of the build plan
+
+Things checked against the real libraries before writing code (node_modules READMEs, docs and
+`.d.ts` files), and what changed as a result.
+
+### Confirmed
+
+| Plan says | Reality |
+| --- | --- |
+| Pi packages under `@earendil-works/*` or `@mariozechner/*` | `@earendil-works/*` is current (1.5.2, Nov 2026). `@mariozechner/*` stopped at 0.73 (May 2026). |
+| OpenRouter through Pi's provider layer | `modelRuntime.getModel("openrouter", "deepseek/deepseek-v4.1-flash")` resolves from Pi's catalog with pricing, so cost per call comes for free. Key is set with `setRuntimeApiKey("openrouter", …)`. |
+| Replace Pi's bash/read/write/edit with sandbox-backed versions, same names and schemas | Pi supports this natively: `createBashToolDefinition(cwd, { operations })`, `createReadToolDefinition`, `createWriteToolDefinition`, `createEditToolDefinition` take pluggable `operations`, and a `customTools` entry with a built-in's name replaces it (`_refreshToolRegistry`). Schemas, descriptions and Pi's own truncation stay identical. |
+| Session persistence and compaction | `SessionManager.create(cwd, dir)` / `SessionManager.open(file)` write JSONL; compaction is a setting (`SettingsManager.inMemory({ compaction: { enabled: true } })`). |
+| One active job per chat, in order | pg-boss 12 has a `key_strict_fifo` queue policy: FIFO per `singletonKey`, other keys run in parallel. |
+
+### Problems found in the plan, and the fix
+
+1. **"Deny attempts to reach the agent or postgres containers" can't be done reliably with a
+   command regex** (`curl $(printf 'po%s' stgres):5432`). Fixed at the network layer instead:
+   two internal networks. `sandbox_net` = agent + sandbox; `db_net` = agent + postgres. The
+   sandbox has no route to Postgres at all. The regex rule stays in `policy.yaml` as a second layer.
+   The agent's Fastify server is reachable from the sandbox, so it exposes nothing but `/health`.
+2. **`SANDBOX_INTERNET=true|false` can't toggle a network in a single compose file.** Implemented
+   as an override file (`docker-compose.internet.yml`) that the Makefile adds when
+   `SANDBOX_INTERNET=true`. Default stays offline.
+3. **pg-boss `key_strict_fifo`: a failed job blocks every later job with the same key.** One
+   crashed task would wedge that chat forever. The worker therefore never throws: failures are
+   recorded in `tasks` and the job always completes. On startup, leftover active/failed jobs from
+   a crash are deleted during recovery.
+4. **Pi's bash schema has no `reason` field**, but the approval message must show "the agent's
+   stated reason". Adding a field would change the schema (which the plan forbids). The reason
+   shown is the text of the assistant message that issued the tool call (what the model said it
+   was about to do), or "(no reason given)".
+5. **Pi's `edit` tool takes `{ path, edits: [{ oldText, newText }] }`**, not a single
+   `oldText/newText`, and implements it as read → modify → write through its operations. The
+   sandbox still exposes `POST /edit {path, oldText, newText}` as specified, but the Pi tool uses
+   `/read` + `/write`, so Pi's multi-edit, fuzzy matching and diff output keep working.
+6. **The read-only allowlist has holes** if taken literally:
+   - `find -exec/-execdir/-ok/-delete/-fprint*`, `git diff --output=…`, `git -c …`,
+     `git --ext-diff`, `rg --pre` (runs a program on every file) all write or execute.
+     These flags downgrade the command to `ask`.
+   - Redirections (`echo x > f`) are writes even when the program is read-only. Output
+     redirects make a command `ask`, or `deny` if the target is outside `/workspace`.
+   - `PATH=… ls`, `$CMD args`, `/usr/bin/ls` — env-prefixed or non-literal command names → `ask`.
+   - Residual risk, documented not fixed: `git status` in an attacker-supplied repo can run
+     `core.fsmonitor`. Blast radius is the sandbox (no secrets, no network) only.
+7. **Test 7 vs. the default rules.** The plan's defaults say "read → allow", but test 7 expects
+   `read /etc/passwd` to be rejected. The policy denies `read` outside `/workspace` (logged as a
+   denied tool call); the sandbox enforces the same with `realpath`.
+8. **Sandbox tokens and "holds NO secrets".** The sandbox needs `SANDBOX_TOKEN` to authenticate
+   the agent. Commands running as the same non-root user could read it from `/proc/1/environ`
+   (the policy denies `environ` reads, but that's best-effort). This is acceptable: the token only
+   grants exec inside the sandbox itself, which the reader already has, and nothing else on
+   `sandbox_net` except the agent can use it. No API keys ever enter the sandbox.
+9. **Telegram MarkdownV2 escaping is brittle** (18 reserved characters, context-dependent).
+   Using HTML parse mode with a small Markdown→HTML converter (code fences, inline code, bold,
+   italic, links) and full `<>&` escaping; plain-text fallback if Telegram rejects it.
+10. **Pi workspace discovery is a prompt-injection vector.** By default Pi loads `AGENTS.md`,
+    skills, prompt templates and extensions from `cwd`. A planted `/workspace/AGENTS.md` would
+    become system instructions. The agent uses a custom `ResourceLoader` that loads none of them.
+11. **Pi's bash tool exports `PI_*` env vars** (model, session id) into commands. Disabled
+    (`exposeSessionEnvironment: false`); commands go to the sandbox anyway.
+12. **Node 24**: the Docker images use `node:24`. The dev container here has Node 22.23, which
+    is enough for tests; `engines` allows ≥22.
+
+### Other deviations
+
+- **Migrations**: a ~50-line SQL migrator (`src/db/migrate.ts`, `migrations/*.sql`, tracked in
+  `schema_migrations`) instead of node-pg-migrate/drizzle-kit. Plain SQL, no extra dependency.
+- **Bash parser**: `unbash` (typed, maintained Bash 5.3 parser that recurses into `$(…)`,
+  `<(…)`, subshells, functions) instead of `bash-parser` (unmaintained since 2022) or
+  `shell-quote` (doesn't parse substitutions).
+- **Sandbox exec server**: TypeScript with zero dependencies, run with Node's built-in type
+  stripping (`node server.ts`), so the sandbox image needs no build step.
+
+## 2. Components
+
+```
+agent container (node:24, non-root)            sandbox container (debian slim, non-root)
+┌───────────────────────────────────────┐      ┌────────────────────────────┐
+│ telegram/  grammY long polling        │      │ sandbox/server.ts :7070    │
+│   auth allowlist, commands, approvals │      │  /exec /read /write /edit  │
+│   progress (typing, status edits)     │ HTTP │  /cancel  (Bearer token)   │
+│ orchestrator/ pg-boss agent.run       │─────▶│  realpath ⊂ /workspace     │
+│   key_strict_fifo per chat, /stop     │      │  process-group kill        │
+│ agent/  Pi AgentSession per chat      │      └────────────────────────────┘
+│   sandbox-backed bash/read/write/edit │         sandbox_net (internal)
+│   untrusted wrapping, truncation      │
+│ policy/ classify() + policy.yaml      │      ┌────────────────────────────┐
+│ approvals/ wait / resolve / expire    │─────▶│ postgres:17  (db_net)      │
+│ http/ Fastify /health (127.0.0.1)     │      └────────────────────────────┘
+└───────────────────────────────────────┘
+     egress_net → Telegram, OpenRouter
+```
+
+## 3. Files
+
+```
+src/config.ts                 zod-validated env
+src/logger.ts                 pino
+src/main.ts                   wiring, startup recovery, shutdown
+src/db/                       pool, migrate, repositories
+src/telegram/                 bot, auth, chunk, format (md→html), progress, commands
+src/orchestrator/             queue (pg-boss), worker, recovery, run registry (/stop)
+src/agent/                    pi runtime, session store, sandbox client, tools, system-prompt.md
+src/policy/                   engine (pure classify), bash analysis, rules loader
+src/approvals/                state machine (pure), service (DB + waiters)
+src/http/                     Fastify health
+sandbox/server.ts             exec server
+config/policy.yaml            editable rules
+migrations/001_init.sql
+docker/agent.Dockerfile, docker/sandbox.Dockerfile
+docker-compose.yml, docker-compose.internet.yml, Makefile, .env.example
+test/                         vitest unit tests + e2e (fake Telegram Bot API + Pi faux model)
+```
+
+## 4. Data model
+
+- `chats(id, model, session_file, session_started_at, created_at)`
+- `tasks(id, chat_id, message_id, prompt, status queued|running|waiting_approval|done|failed|cancelled, created_at, started_at, finished_at, error)`
+- `tool_calls(id, task_id, tool, args, decision, reason, result_summary, is_error, duration_ms, created_at)`
+- `approvals(id, task_id, tool_call_id, chat_id, message_id, summary, status pending|approved|denied|expired, requested_at, expires_at, resolved_at)`
+- `usage(id, task_id, model, input_tokens, output_tokens, cache_read_tokens, cost_usd, created_at)`
+
+## 5. Build order
+
+1. Scaffold, config, logger, PLAN.md
+2. Policy engine + tests
+3. Message chunking / formatting + tests; auth + tests
+4. Approval state machine + tests
+5. Sandbox exec server + tests
+6. DB migrations + repositories
+7. Agent runtime (Pi, tools, wrapping, usage)
+8. Orchestrator (pg-boss, cancel, recovery)
+9. Telegram gateway (commands, progress, approvals UI)
+10. Docker, compose, Makefile, README
+11. E2E harness (fake Telegram API + faux model, real sandbox + Postgres) for the acceptance tests
+
+## 6. Extension points for later phases
+
+- `policy/engine.ts` takes a `ToolCall` with a `taskContext` (Phase 3 taint tracking).
+- `agent/tools.ts` registers tools from a list (Phase 2 schedule/memory tools, Phase 3 browser/MCP).
+- `orchestrator/queue.ts` exposes `enqueueRun()` (Phase 2 cron schedules enqueue the same job).
+- `usage` table is written per model call (Phase 2 budget enforcement reads it).
