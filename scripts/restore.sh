@@ -18,12 +18,13 @@ docker run --rm -v "$SRC:/b:ro" -w /b alpine:3 sha256sum -c SHA256SUMS >/dev/nul
 
 echo "Stopping the agent…"
 "${COMPOSE[@]}" stop agent backup >/dev/null 2>&1 || true
+# On a fresh machine this creates the volumes (with Compose's labels) without starting anything.
+"${COMPOSE[@]}" up --no-start >/dev/null 2>&1
 "${COMPOSE[@]}" up -d postgres
 until "${COMPOSE[@]}" exec -T postgres pg_isready -U firefly -d firefly >/dev/null 2>&1; do sleep 1; done
 
 for v in sessions memory workspace; do
   echo "Restoring volume $v…"
-  docker volume create "${PROJECT}_${v}" >/dev/null
   docker run --rm -v "${PROJECT}_${v}:/target" -v "$SRC:/b:ro" alpine:3 \
     sh -c 'find /target -mindepth 1 -delete && tar -C /target -xzf "/b/$0.tgz"' "$v"
 done

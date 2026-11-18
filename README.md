@@ -30,32 +30,37 @@ Telegram ──long polling──▶ agent ──▶ OpenRouter
 Message **@userinfobot** (or **@RawDataBot**) and copy the numeric `Id`. Only this id
 will be able to talk to the bot; everyone else is ignored silently.
 
-### 3. Fill in `.env`
+### 3. Install
+
+Install [OrbStack](https://orbstack.dev) (lighter) or Docker Desktop, then:
 
 ```sh
-cp .env.example .env
-openssl rand -hex 32   # use for SANDBOX_TOKEN
-openssl rand -hex 16   # use for POSTGRES_PASSWORD
+./install.sh
 ```
 
-Set `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USER_IDS`, `OPENROUTER_API_KEY`
-([openrouter.ai/keys](https://openrouter.ai/keys)), `SANDBOX_TOKEN` and `POSTGRES_PASSWORD`.
-Everything else has a sensible default. The agent refuses to start and lists the problems
-if anything is missing or malformed.
+It checks Docker, asks for the bot token, your user id and your OpenRouter key
+([openrouter.ai/keys](https://openrouter.ai/keys)), and asks where nightly backups should go.
+It generates every other secret (`SANDBOX_TOKEN`, `BROWSER_TOKEN`, `DASHBOARD_TOKEN`,
+`POSTGRES_PASSWORD` in `.env`, and the vault master key in `secrets/`), builds the images,
+runs migrations, starts the stack, and prints the dashboard link.
 
-### 4. Start it
+**Back up `secrets/vault_master_key` somewhere safe** (a password manager). Backups don't
+include it, and without it the vault can't be decrypted.
+
+### 4. Day to day
 
 ```sh
-make up        # build and start (applies SANDBOX_INTERNET from .env)
-make logs      # follow logs
-make ps        # status
-make down      # stop
+make logs        # follow logs
+make ps          # status
+make restart     # after editing config/policy.yaml or config/mcp.yaml
+make dashboard   # print the dashboard link
+make backup      # back up now (also runs nightly)
+make update      # pull, back up, build, restart; rolls back if the agent isn't healthy
+make down        # stop
 ```
 
-Send your bot `/start`. Health: `curl 127.0.0.1:8080/health`.
-
-`docker compose up -d` works too; `make up` additionally adds
-`docker-compose.internet.yml` when `SANDBOX_INTERNET=true`.
+Send your bot `/start`. `make up` adds `docker-compose.internet.yml` when
+`SANDBOX_INTERNET=true`; plain `docker compose up -d` keeps the sandbox offline.
 
 ## Using it
 
@@ -75,6 +80,8 @@ and run it"*.
 | `/memory [topic]` | What I remember (profile, or one topic) |
 | `/forget <topic>` | Delete a memory topic |
 | `/usage` | Spend today, this month, top 5 tasks |
+| `/pause`, `/resume` | Stop / restart new tasks and routines (a running task finishes) |
+| `/health` | Uptime, spend, failed tasks, disk usage (also sent weekly) |
 | `/tasks` | Recent tasks and their status |
 | `/raise [usd]` | Lift this month's budget cap (default: one more monthly budget) |
 
@@ -173,6 +180,45 @@ docker compose cp ./notes.txt sandbox:/workspace/
 docker compose cp sandbox:/workspace/report.md .
 ```
 
+### Dashboard and menu bar
+
+`make dashboard` prints `http://127.0.0.1:8080/?token=…`. Open it once and a cookie takes
+over. It shows tasks, the tool-call audit log, approvals (you can approve or deny there),
+usage over the last 30 days, schedules (on/off), memory, and a global pause switch. It's
+served only on 127.0.0.1, and everything except `/health` needs the token.
+
+An optional menu bar app lives in [`macos/FireflyMenu`](macos/FireflyMenu/README.md): a
+status dot, pending approvals, pause/resume, open dashboard.
+
+### Backups, restore, update
+
+- **Nightly** (`BACKUP_TIME`, default 03:30): a `pg_dump` plus tarballs of the sessions,
+  memory and workspace volumes, with checksums, in `BACKUP_DIR`, kept `BACKUP_KEEP_DAYS`
+  (14) days. Point `BACKUP_DIR` at a folder synced to iCloud or on an external drive.
+- **Restore** (same or another machine): copy the repo, `.env` and
+  `secrets/vault_master_key`, then `make restore DIR=<backup folder>`. Conversations,
+  memory, routines, the vault and the workspace come back.
+- **Update**: `make update` tags the running images `:previous`, pulls, backs up, builds and
+  restarts. If the agent isn't healthy within 3 minutes, it switches back to `:previous`.
+  Migrations are forward-only; if one ran before a rollback, restore the pre-update backup.
+
+### Mac apps (built, but off)
+
+`bridge/` is a tiny launchd service for the Mac itself. It listens on 127.0.0.1 with a
+token, and its only action is `shortcuts run <name>` for shortcuts in a Shortcuts folder
+named **Agent** that are also on its allowlist. There's no AppleScript and no shell. It
+ships with an empty allowlist, so it rejects every call. To turn it on:
+
+```sh
+bridge/install.sh            # on the Mac: installs the launchd agent, makes a token
+# add names to ~/Library/Application Support/Firefly/config.json, e.g.
+#   { "allowlist": ["Turn on desk lamp"] }
+# in .env: MAC_BRIDGE_URL=http://host.docker.internal:7072, then
+make restart
+```
+
+Every shortcut the agent runs still asks you on Telegram first.
+
 ## Mac mini notes
 
 - **Docker:** install [OrbStack](https://orbstack.dev) (lighter) or Docker Desktop, and enable
@@ -200,6 +246,9 @@ docker compose cp sandbox:/workspace/report.md .
   become instructions.
 - Tool output is wrapped as `<tool_output trust="untrusted">`; the system prompt treats it
   as data. Enforcement is in code and `policy.yaml`, not in the prompt.
+- The dashboard and its API are on 127.0.0.1 and need `DASHBOARD_TOKEN` (the sandbox can
+  reach the port internally, so the token is required); changes also need an `x-firefly`
+  header, which a cross-site form can't send.
 - Every tool call (allowed, asked, denied) is logged in the `tool_calls` table, with
   approvals in `approvals` and token cost per model call in `usage`.
 
@@ -209,8 +258,8 @@ The default model is cheap, and cheap models are easier to manipulate. Keep appr
 
 ```sh
 pnpm install
-pnpm test          # unit tests (policy, chunking, formatting, auth, approvals, sandbox server)
-make test-e2e      # end-to-end acceptance suite (starts a throwaway Postgres container)
+pnpm test          # unit tests (policy, chunking, formatting, auth, approvals, sandbox, bridge, vault…)
+make test-e2e      # acceptance suites for all four phases (starts a throwaway Postgres container)
 pnpm typecheck
 ```
 
@@ -218,6 +267,9 @@ The end-to-end suite runs the real app wiring (grammY long polling, pg-boss, the
 loop, the policy engine, approvals, the sandbox server) against a fake Telegram Bot API and
 Pi's scripted model, so it needs no Telegram account or OpenRouter key.
 
-Layout: `src/telegram` (gateway), `src/orchestrator` (queue), `src/agent` (Pi runtime and
-sandbox-backed tools), `src/policy`, `src/approvals`, `src/db`, `sandbox/server.ts`
-(exec server), `config/policy.yaml`, `migrations/`.
+Layout: `src/telegram` (gateway and commands), `src/orchestrator` (queue), `src/agent` (Pi
+runtime and tool guard), `src/policy`, `src/approvals`, `src/scheduler`, `src/memory`,
+`src/budget`, `src/browser`, `src/vault`, `src/mcp`, `src/control` (pause, health report),
+`src/http` (health and dashboard API), `dashboard/` (React page), `sandbox/server.ts`,
+`browser/server.ts`, `bridge/` (Mac host bridge), `scripts/` (backup, restore, update),
+`config/`, `migrations/`.

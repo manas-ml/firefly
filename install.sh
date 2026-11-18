@@ -71,8 +71,12 @@ if [[ ! -s secrets/vault_master_key ]]; then
 fi
 [[ -f secrets/mac_bridge_token ]] || (umask 022 && : > secrets/mac_bridge_token)
 
-say "Building images (a few minutes the first time)"
-make -s build
+if [[ "${FIREFLY_SKIP_BUILD:-0}" == "1" ]]; then
+  say "Using already-built images (FIREFLY_SKIP_BUILD=1)"
+else
+  say "Building images (a few minutes the first time)"
+  make -s build
+fi
 
 say "Running database migrations"
 docker compose up -d postgres
@@ -80,7 +84,7 @@ until docker compose exec -T postgres pg_isready -U firefly -d firefly >/dev/nul
 docker compose run --rm --no-deps agent node dist/db/migrate-cli.js
 
 say "Starting Firefly"
-make -s up
+if [[ "${FIREFLY_SKIP_BUILD:-0}" == "1" ]]; then docker compose up -d --no-build --remove-orphans; else make -s up; fi
 status=unknown
 for _ in $(seq 1 60); do
   status="$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose ps -q agent)" 2>/dev/null || echo unknown)"

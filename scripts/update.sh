@@ -30,12 +30,16 @@ if [[ "${SKIP_PULL:-0}" != "1" ]]; then
 fi
 
 echo "Backing up before the update…"
-"${COMPOSE[@]}" run --rm --no-deps backup /bin/sh /scripts/backup.sh || echo "warning: pre-update backup failed"
+"${COMPOSE[@]}" run --rm --no-deps --entrypoint /bin/sh backup /scripts/backup.sh || echo "warning: pre-update backup failed"
 
 echo "Building…"
-"${COMPOSE[@]}" build
+if [[ -n "${UPDATE_BUILD_CMD:-}" ]]; then
+  bash -c "$UPDATE_BUILD_CMD" # advanced: a custom build (e.g. a remote builder)
+else
+  "${COMPOSE[@]}" build
+fi
 echo "Restarting (migrations run when the agent starts)…"
-"${COMPOSE[@]}" up -d --remove-orphans
+"${COMPOSE[@]}" up -d --no-build --remove-orphans
 
 if wait_healthy; then
   echo "Update complete: the agent is healthy."

@@ -30,7 +30,7 @@ install:
 
 # Back up now (the backup service also runs nightly at BACKUP_TIME).
 backup: check-env
-	$(COMPOSE) run --rm --no-deps backup /bin/sh /scripts/backup.sh
+	$(COMPOSE) run --rm --no-deps --entrypoint /bin/sh backup /scripts/backup.sh
 
 # make restore DIR=backups/2026-11-18_033000
 restore: check-env

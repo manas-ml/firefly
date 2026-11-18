@@ -347,3 +347,88 @@ domain lists are enforced in the browser server; the browser image runs hardened
 
 Not verifiable here: real Gmail/Calendar/Notion through Composio (no account), and real
 websites, since this environment has no general internet access from containers.
+
+---
+
+# Phase 4: dashboard, installer, Mac bridge
+
+## Design
+
+- **Pause switch** (`src/control/settings.ts`, key `paused` in `settings`): `/pause` and
+  `/resume` in Telegram, and the dashboard toggle, all write it. While paused, new messages
+  get a "paused" reply and aren't queued, jobs already queued are cancelled when picked up,
+  and cron firings are skipped (logged as "routine skipped").
+- **Dashboard** (`src/http/dashboard.ts`, `dashboard/`): a React 19 page bundled with esbuild
+  into `dist/dashboard`, served by the agent's Fastify server (published on 127.0.0.1
+  only). The sandbox can reach that port on the internal network, so every route except
+  `/health` needs `DASHBOARD_TOKEN`: `/?token=` sets an HttpOnly SameSite=Strict cookie and
+  redirects to strip the token from the URL. POSTs also need an `x-firefly: 1` header
+  (CSRF). A strict CSP, no-referrer and no framing are set. All API output passes through
+  the vault redactor. Views: overview (status, pause, running tasks, 30-day spend chart,
+  top tasks), tasks, audit log, approvals (approve/deny), schedules (on/off), memory.
+- **Menu bar app** (`macos/FireflyMenu`): a SwiftUI `MenuBarExtra` polling `/api/status`
+  with the dashboard token, with status dot, pending approvals, pause/resume and open
+  dashboard. `make menubar-config` writes its config.
+- **install.sh**: checks Docker, Compose and openssl; creates `.env` (prompts for the three
+  values a person has to supply, or takes `FIREFLY_*` env vars); generates the other
+  tokens, the vault master key and the bridge-token placeholder; builds, migrates, starts,
+  waits for health, and prints the dashboard link.
+- **Backups**: a `backup` service (postgres:17-alpine, on `db_net` only, read-only volume
+  mounts, only `DAC_OVERRIDE`) runs `scripts/backup.sh` daily at `BACKUP_TIME`: a
+  `pg_dump -Fc` plus tarballs of sessions, memory and workspace, `SHA256SUMS`, and a prune
+  older than `BACKUP_KEEP_DAYS`. `scripts/restore.sh` verifies checksums, lets Compose
+  create the volumes, refills them (preserving ownership), restores the database and
+  starts the stack. Routines re-register with pg-boss on startup.
+- **Update** (`scripts/update.sh`, `make update`): tag `firefly-*:latest` as `:previous`,
+  `git pull --ff-only`, pre-update backup, build, `up -d --no-build`, then wait for the
+  agent container's health status. If it isn't healthy in time, retag `:previous` as
+  `:latest`, bring it up again and say so. A failed build stops before anything changes.
+- **Weekly health report** (`src/control/health-report.ts`): a pg-boss cron
+  (`HEALTH_REPORT_CRON`, Mondays 09:17) sends uptime and restarts in 7 days (boot history
+  in `settings`), spend for the week and month, failed tasks with recent errors, and disk
+  (data volume free space, database size, workspace size and free space). `/health` sends
+  it on demand.
+- **Mac host bridge** (`bridge/`): a zero-dependency Node server for launchd on 127.0.0.1:7072
+  with a token file. The only route is `POST /shortcut`. It runs
+  `shortcuts run <name>` via `execFile` (no shell) only if the name is on `config.json`'s
+  allowlist *and* in the Shortcuts folder "Agent". It ships with an empty allowlist, which
+  rejects everything. On the agent side, `mac_shortcut` exists only when `MAC_BRIDGE_URL`
+  and a token (Docker secret `mac_bridge_token`) are set, and its policy is always `ask`.
+
+## Deviations
+
+- Secret files (`secrets/vault_master_key`, `secrets/mac_bridge_token`) are mode 0644
+  inside a 0700 `secrets/` directory, so the agent's non-root user can read the Compose
+  bind mount on Linux and macOS while other host users can't reach them.
+- The backup container can reach the agent's port on `db_net`. It already holds the
+  database password, and the agent only exposes `/health` and the token-protected
+  dashboard there.
+- `make update` rolls back images, not the database. Migrations are written to be additive;
+  the automatic pre-update backup covers the rest (`make restore`).
+- `install.sh` honours `FIREFLY_SKIP_BUILD=1` (use already-built images) and `update.sh`
+  honours `UPDATE_BUILD_CMD` (custom build), for offline reinstalls and custom builders.
+  Both were also needed to test in the build environment.
+- The menu bar app is optional in the plan and was written but **not compiled**: there is
+  no Swift toolchain in the build environment.
+
+## Results
+
+| Done when | Result |
+| --- | --- |
+| A fresh machine goes from zero to a working bot with install.sh and a filled .env | Pass (Docker, Linux): `install.sh`, run non-interactively against a fake Telegram API, generated `.env` and secrets, ran 3 migrations, and brought up 5 services healthy with the vault unlocked; the dashboard answered with the token and returned 401 without it |
+| Restoring last night's backup on a second machine brings back conversations, memory and schedules | Pass (Docker): back up, `down -v`, then `restore.sh` onto fresh volumes. Tasks, the vault secret (still decryptable), the routine (re-registered in pg-boss), workspace, memory and session files came back with ownership intact, and the stack was healthy |
+| /pause stops a scheduled routine from firing | Pass (`test/e2e/phase4.test.ts`): a per-minute routine created while paused didn't run across a minute boundary; /run and new messages were refused; /resume restored them |
+| The bridge rejects every call while the allowlist is empty | Pass (`test/bridge.test.ts` with a fake `shortcuts` CLI, and end to end: agent, approval, bridge refusal, agent told) |
+
+Also covered: dashboard auth, cookie swap, security headers, CSRF header, every API view,
+approve from the dashboard, rendering in real Chromium with no console errors; `/health`
+contents and its weekly schedule; bridge allowlist + folder check and that shell
+metacharacters in names are inert; `make update` rollback (a deliberately broken agent
+image was rolled back to the previous image ID and became healthy), a failed build leaving
+the running version alone, and a clean update. Found and fixed while testing: `make
+backup` ran the nightly loop instead of one backup (entrypoint), restore left unlabelled
+volumes, and creating a routine for a chat that had never sent a message failed.
+
+Not verifiable here: macOS itself (launchd, the `shortcuts` CLI, `host.docker.internal` on
+Docker Desktop/OrbStack, the SwiftUI app), iCloud-synced backup folders, and a real
+`git pull` update from the remote.
