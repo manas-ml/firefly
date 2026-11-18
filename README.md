@@ -20,17 +20,72 @@ Telegram ──long polling──▶ agent ──▶ OpenRouter
 
 ## Setup
 
-### 1. Create the bot
+### 1. Connect Telegram to the Mac mini
 
-1. In Telegram, open **@BotFather**, send `/newbot`, pick a name and a username.
-2. Copy the token it gives you (looks like `123456789:AA…`).
+Telegram needs no port forwarding, no public address and no webhook. The agent on the Mac
+mini makes an outbound connection to Telegram and asks it for new messages (long polling),
+so it works behind any home router. You only need the bot's token and your own user id.
 
-### 2. Find your Telegram user id
+**a. Create the bot (on your phone or any Telegram app)**
 
-Message **@userinfobot** (or **@RawDataBot**) and copy the numeric `Id`. Only this id
-will be able to talk to the bot; everyone else is ignored silently.
+1. Open a chat with **@BotFather** (the verified one with the blue check).
+2. Send `/newbot`.
+3. Give it a display name (e.g. `My Agent`), then a username ending in `bot`
+   (e.g. `my_firefly_agent_bot`). It must be unique across Telegram.
+4. BotFather replies with a token that looks like `123456789:AAH…`. Copy it. **Treat it like
+   a password**: anyone with it can control the bot. If it leaks, send BotFather `/revoke`.
+5. Optional but recommended: send BotFather `/setprivacy`, choose your bot, then **Enable**.
+   Firefly ignores group chats anyway; this is just a second layer.
 
-### 3. Install
+**b. Find your numeric Telegram user id**
+
+Message **@userinfobot** and copy the number after `Id:` (for example `123456789`). This is
+not your username. Firefly drops every message that isn't from this id (and all group
+chats), silently, and logs the attempt. To allow a second person, comma-separate ids:
+`TELEGRAM_ALLOWED_USER_IDS=111111111,222222222`.
+
+**c. Put them on the Mac mini**
+
+`./install.sh` (step 2) asks for the token and the id and writes them to `.env`. To do it by
+hand, edit `.env` on the Mac mini:
+
+```sh
+TELEGRAM_BOT_TOKEN=123456789:AAH...
+TELEGRAM_ALLOWED_USER_IDS=123456789
+```
+
+Keep `.env` private (`chmod 600 .env`; it's already git-ignored). Never paste the token into
+a chat with the agent: tokens and passwords go in the vault (`/vault add`) or `.env`.
+
+**d. Check the connection**
+
+After the stack is up (step 2):
+
+1. Open your bot in Telegram (the link BotFather gave you, `t.me/<username>`), press **Start**
+   or send `/start`. It should reply with its help text within a few seconds.
+2. Send `What files are in my workspace?`. You should see a "⏳ Working…" status message and
+   then an answer.
+3. On the Mac mini, `curl 127.0.0.1:8080/health` should print `"telegram":true`.
+
+**If it doesn't reply**
+
+| Symptom | Likely cause and fix |
+| --- | --- |
+| No reply at all, and logs (`make logs`) show `dropped update from unauthorized sender` | The id in `TELEGRAM_ALLOWED_USER_IDS` isn't yours. Fix `.env` and run `make restart`. |
+| The agent won't start and `make logs` shows `Invalid configuration` | A value in `.env` is missing or malformed (the message names it). The token must look like `123456789:AA…`. |
+| Logs show `telegram polling stopped` with `401` / `Unauthorized` | The token is wrong or was revoked. Get a fresh one from BotFather (`/token`) and `make restart`. |
+| Logs show `telegram polling stopped` with `409` / `Conflict` ("terminated by other getUpdates request") | Another copy is polling with the same token (an old container, or your laptop). Stop it. Only one process can poll a bot. |
+| `"telegram":false` in `/health`, or connection timeouts | The Mac mini can't reach `api.telegram.org`. Check its internet, DNS, VPN or firewall (outbound HTTPS to Telegram only). |
+| Replies are slow or missing after a power cut or reboot | Docker isn't running yet: see *Mac mini notes* below to start it at login. |
+
+Telegram also needs the Mac mini awake and online. Without the sleep settings in *Mac mini
+notes*, the bot goes quiet when the Mac sleeps, and catches up on its messages when it wakes.
+
+**Using it away from home:** nothing to configure. Telegram is the connection, so the bot
+answers from anywhere your phone has Telegram. The dashboard stays on the Mac
+(`127.0.0.1`); use `/pause`, `/status`, approvals and `/health` in Telegram instead.
+
+### 2. Install
 
 Install [OrbStack](https://orbstack.dev) (lighter) or Docker Desktop, then:
 
@@ -47,7 +102,7 @@ runs migrations, starts the stack, and prints the dashboard link.
 **Back up `secrets/vault_master_key` somewhere safe** (a password manager). Backups don't
 include it, and without it the vault can't be decrypted.
 
-### 4. Day to day
+### 3. Day to day
 
 ```sh
 make logs        # follow logs
@@ -221,13 +276,21 @@ Every shortcut the agent runs still asks you on Telegram first.
 
 ## Mac mini notes
 
+(Telegram setup is in *Setup › 1* above; the Mac only needs to stay awake and online.)
+
 - **Docker:** install [OrbStack](https://orbstack.dev) (lighter) or Docker Desktop, and enable
   *Start at login*. The containers use `restart: unless-stopped`, so they come back with Docker.
 - **System Settings › Energy:** turn on *Prevent automatic sleeping when the display is off*
   (on some macOS versions: *Battery › Options*, or `sudo pmset -a sleep 0`).
 - **System Settings › Energy:** turn on *Start up automatically after a power failure*.
 - **System Settings › Users & Groups:** consider automatic login for the account running
-  Docker, so it starts after a reboot without you.
+  Docker, so it starts after a reboot without you. Until Docker is up after a reboot, the
+  bot can't answer; Telegram holds your messages (for up to 24 hours) and the agent picks
+  them up when it connects.
+- **Firewall / network:** only outbound HTTPS is needed (Telegram, OpenRouter). Don't open
+  or forward any inbound port; nothing listens for the internet.
+- **Check after a reboot:** `docker compose ps` (or `make ps`) shows all services, and
+  `curl 127.0.0.1:8080/health` should say `"ok":true`.
 
 ## Security model
 
