@@ -67,8 +67,8 @@ export class FakeTelegram {
   private server = http.createServer((req, res) => void this.handle(req, res));
   url = "";
 
-  async start(): Promise<void> {
-    await new Promise<void>((r) => this.server.listen(0, "127.0.0.1", r));
+  async start(host = "127.0.0.1", port = 0): Promise<void> {
+    await new Promise<void>((r) => this.server.listen(port, host, r));
     this.url = `http://127.0.0.1:${(this.server.address() as AddressInfo).port}`;
   }
 

@@ -1,0 +1,94 @@
+# Firefly: Telegram-controlled personal agent.
+#
+# Networks (all internal except `egress`):
+#   sandbox_net  agent <-> sandbox      (sandbox has no other route anywhere)
+#   db_net       agent <-> postgres     (sandbox can't reach the database at all)
+#   egress       agent -> internet      (Telegram, OpenRouter)
+# Set SANDBOX_INTERNET=true in .env and use `make up` to give the sandbox
+# internet access (adds docker-compose.internet.yml).
+#
+# Nothing is published except the health endpoint, on 127.0.0.1 only.
+# The Docker socket is never mounted.
+
+name: firefly
+
+x-hardening: &hardening
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: firefly
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: firefly
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - db_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U firefly -d firefly"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  sandbox:
+    <<: *hardening
+    build:
+      context: .
+      dockerfile: docker/sandbox.Dockerfile
+    environment:
+      SANDBOX_TOKEN: ${SANDBOX_TOKEN:?set SANDBOX_TOKEN in .env}
+      TZ: ${TZ:-America/Toronto}
+    volumes:
+      - workspace:/workspace
+    networks:
+      - sandbox_net
+    pids_limit: 512
+    mem_limit: 2g
+    cpus: 2
+
+  agent:
+    <<: *hardening
+    build:
+      context: .
+      dockerfile: docker/agent.Dockerfile
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://firefly:${POSTGRES_PASSWORD}@postgres:5432/firefly
+      SANDBOX_URL: http://sandbox:7070
+      DATA_DIR: /data
+      HTTP_HOST: 0.0.0.0
+      HTTP_PORT: "8080"
+    volumes:
+      - sessions:/data
+      - ./config/policy.yaml:/app/config/policy.yaml:ro
+    ports:
+      - "127.0.0.1:${HEALTH_PORT:-8080}:8080"
+    networks:
+      - sandbox_net
+      - db_net
+      - egress
+    depends_on:
+      postgres:
+        condition: service_healthy
+      sandbox:
+        condition: service_healthy
+    mem_limit: 1g
+
+networks:
+  sandbox_net:
+    internal: true
+  db_net:
+    internal: true
+  egress: {}
+
+volumes:
+  pgdata:
+  sessions:
+  workspace:

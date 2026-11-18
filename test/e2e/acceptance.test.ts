@@ -276,6 +276,22 @@ describe("Phase 1 acceptance", () => {
     expect(reply.text).toBe("The code word is pineapple.");
   });
 
+  it("9b. a restart mid-task marks the task interrupted and tells the user", async () => {
+    faux.faux.setResponses([
+      fauxAssistantMessage(fauxToolCall("bash", { command: "sleep 300" }), { stopReason: "toolUse" }),
+      fauxAssistantMessage("should not be reached"),
+    ]);
+    const from = say("Long job");
+    const approval = await tg.waitForMessage(isApproval, 10_000, from);
+    tg.press(OWNER, approval, /Approve/);
+    await tg.waitForMessage((m) => m.edits.some((e) => e.includes("Running: sleep 300")), 10_000, from);
+    await app.stop();
+    await tg.waitForMessage((m) => m.text.includes("The agent restarted while working on: “Long job”"), 5000, from);
+    const task = await db.pool.query("SELECT status, error FROM tasks WHERE prompt = 'Long job'");
+    expect(task.rows[0]).toEqual({ status: "failed", error: "interrupted" });
+    app = await boot();
+  });
+
   it("10. a reply longer than 4096 characters arrives split, code blocks intact", async () => {
     const code = Array.from({ length: 250 }, (_, i) => `    total += values[${i}] * weights[${i}]  # step ${i}`).join("\n");
     const long = `Here is the function:\n\n\`\`\`python\ndef score(values, weights):\n    total = 0\n${code}\n    return total\n\`\`\`\n\n${"That is a lot of code. ".repeat(40)}`;

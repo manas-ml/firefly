@@ -1,4 +1,4 @@
-import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { SandboxClient, SandboxError } from "../src/agent/sandbox-client.ts";
@@ -22,7 +22,7 @@ describe("sandbox server", () => {
 
   it("runs commands in the workspace and reports exit codes", async () => {
     const r = await client.exec({ command: "pwd; echo err >&2; exit 3", timeoutSec: 5 });
-    expect(r.stdout.trim()).toBe(sb.workspace);
+    expect(r.stdout.trim()).toBe(await realpath(sb.workspace)); // macOS: /var -> /private/var
     expect(r.stderr.trim()).toBe("err");
     expect(r.exitCode).toBe(3);
     expect(r.timedOut).toBe(false);

@@ -1,0 +1,11 @@
+# Gives the sandbox outbound internet access on its own network
+# (not shared with the agent or the database). Added by `make up`
+# when SANDBOX_INTERNET=true.
+services:
+  sandbox:
+    networks:
+      - sandbox_net
+      - sandbox_egress
+
+networks:
+  sandbox_egress: {}

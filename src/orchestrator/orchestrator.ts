@@ -43,6 +43,7 @@ export interface ActiveRun {
  */
 export class Orchestrator {
   private readonly active = new Map<number, ActiveRun>();
+  private shuttingDown = false;
 
   constructor(
     private readonly boss: PgBoss,
@@ -77,7 +78,7 @@ export class Orchestrator {
     for (const task of interrupted) {
       this.log.warn({ taskId: task.id, chatId: task.chat_id }, "task interrupted by restart");
       await this.notifier
-        .sendNotice(task.chat_id, `⚠️ The agent restarted while working on: “${excerpt(task.prompt)}”. That task was stopped; send it again if you still need it.`)
+        .sendNotice(task.chat_id, interruptedNotice(task.prompt))
         .catch((err: unknown) => this.log.warn({ err }, "could not notify about interrupted task"));
     }
     for (const approval of await this.repo.expireAllPendingApprovals()) {
@@ -112,7 +113,9 @@ export class Orchestrator {
     return this.active.get(chatId);
   }
 
+  /** On shutdown: abort running tasks; they are recorded as interrupted, not cancelled. */
   async stopAll(): Promise<void> {
+    this.shuttingDown = true;
     for (const run of this.active.values()) run.controller.abort();
   }
 
@@ -148,7 +151,10 @@ export class Orchestrator {
       await p.done();
       progress = undefined;
 
-      if (result.aborted) {
+      if (result.aborted && this.shuttingDown) {
+        await this.repo.setTaskStatus(taskId, "failed", "interrupted");
+        await this.notifier.sendNotice(chatId, interruptedNotice(task.prompt));
+      } else if (result.aborted) {
         await this.repo.setTaskStatus(taskId, "cancelled");
         await this.notifier.sendNotice(chatId, "⏹ Stopped.");
       } else if (result.error) {
@@ -168,6 +174,10 @@ export class Orchestrator {
       if (this.active.get(chatId)?.taskId === taskId) this.active.delete(chatId);
     }
   }
+}
+
+function interruptedNotice(prompt: string): string {
+  return `⚠️ The agent restarted while working on: “${excerpt(prompt)}”. That task was stopped; send it again if you still need it.`;
 }
 
 export function excerpt(text: string, max = 80): string {
