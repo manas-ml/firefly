@@ -9,6 +9,12 @@ import { excerpt, type Orchestrator } from "../orchestrator/orchestrator.ts";
 import { isAllowed } from "./auth.ts";
 import { escapeHtml } from "./format.ts";
 import { approvalKeyboard, approvalText, type TelegramUi } from "./ui.ts";
+import type { BudgetService } from "../budget/budget.ts";
+import type { MemoryStore } from "../memory/store.ts";
+import type { SchedulerService } from "../scheduler/service.ts";
+import { registerMemoryCommands } from "./commands/memory.ts";
+import { registerRoutineCommands } from "./commands/routines.ts";
+import { registerUsageCommands } from "./commands/usage.ts";
 
 export interface BotDeps {
   allowedUserIds: readonly number[];
@@ -19,6 +25,12 @@ export interface BotDeps {
   ui: TelegramUi;
   log: Logger;
   approvalTimeoutSeconds: number;
+  timezone: string;
+  scheduler?: SchedulerService;
+  memory?: MemoryStore;
+  budget?: BudgetService;
+  /** Feature modules registered after the core commands (vault, pause, ...). */
+  extraHandlers?: ((bot: Bot) => void)[];
 }
 
 export const COMMANDS = [
@@ -28,6 +40,13 @@ export const COMMANDS = [
   { command: "status", description: "Running task, model, session age" },
   { command: "model", description: "Show or switch the model" },
   { command: "approvals", description: "List pending approvals" },
+  { command: "schedules", description: "Routines, with on/off buttons" },
+  { command: "run", description: "Run a routine now" },
+  { command: "memory", description: "What I remember about you" },
+  { command: "forget", description: "Forget a memory topic" },
+  { command: "usage", description: "Spending today and this month" },
+  { command: "tasks", description: "Recent tasks" },
+  { command: "raise", description: "Lift this month's budget cap" },
 ];
 
 const HELP = [
@@ -42,6 +61,9 @@ const HELP = [
   "/status — what I'm doing",
   "/model <id> — switch model (e.g. deepseek/deepseek-v4.1-flash)",
   "/approvals — pending approvals",
+  "/schedules, /run <name> — routines",
+  "/memory, /forget <topic> — what I remember (say “remember that …” to add)",
+  "/usage, /tasks, /raise — spending and history",
 ].join("\n");
 
 function ago(date: Date | null | undefined): string {
@@ -85,8 +107,9 @@ export function registerHandlers(bot: Bot, deps: BotDeps): void {
 
   bot.command("stop", async (ctx) => {
     const chatId = chatIdOf(ctx);
-    if (deps.orchestrator.stop(chatId)) await ctx.reply("Stopping…");
-    else await ctx.reply("Nothing is running.");
+    const stopped = deps.orchestrator.stop(chatId);
+    if (!stopped) await ctx.reply("Nothing is running.");
+    else await ctx.reply(stopped.kind === "routine" ? `Stopping routine “${stopped.name ?? "routine"}”…` : "Stopping…");
   });
 
   bot.command("status", async (ctx) => {
@@ -142,7 +165,12 @@ export function registerHandlers(bot: Bot, deps: BotDeps): void {
     }
   });
 
-  bot.on("callback_query:data", async (ctx) => {
+  if (deps.scheduler) registerRoutineCommands(bot, { scheduler: deps.scheduler, orchestrator: deps.orchestrator });
+  if (deps.memory) registerMemoryCommands(bot, { memory: deps.memory, sendMarkdown: (chatId, md) => deps.ui.sendMarkdown(chatId, md) });
+  if (deps.budget) registerUsageCommands(bot, { budget: deps.budget, repo: deps.repo, timezone: deps.timezone });
+  for (const register of deps.extraHandlers ?? []) register(bot);
+
+  bot.callbackQuery(/^ap:/, async (ctx) => {
     const decoded = decodeCallback(ctx.callbackQuery.data);
     if (!decoded) {
       await ctx.answerCallbackQuery({ text: "Unknown button." });
@@ -160,6 +188,8 @@ export function registerHandlers(bot: Bot, deps: BotDeps): void {
       await ctx.editMessageReplyMarkup({ reply_markup: undefined }).catch(() => undefined);
     }
   });
+
+  bot.on("callback_query:data", (ctx) => ctx.answerCallbackQuery({ text: "Unknown button." }));
 
   bot.on("message:text", async (ctx) => {
     const text = ctx.message.text;

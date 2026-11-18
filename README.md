@@ -5,8 +5,8 @@ A self-hosted personal agent for a Mac mini, controlled from Telegram. It runs t
 and file tasks inside an isolated sandbox container, and asks you on Telegram before
 anything risky.
 
-This is **Phase 1 (MVP)**. See [PLAN.md](PLAN.md) for the design, the review of the build
-plan and the deviations from it.
+See [PLAN.md](PLAN.md) for the design, the review of the build plan, and the deviations
+from it, phase by phase.
 
 ```
 Telegram ──long polling──▶ agent ──▶ OpenRouter
@@ -70,8 +70,38 @@ and run it"*.
 | `/status` | Running task, model, session age |
 | `/model <id>` | Switch model, e.g. `/model deepseek/deepseek-v4.1-flash` |
 | `/approvals` | Re-post pending approvals |
+| `/schedules` | Routines, with on/off and run-now buttons |
+| `/run <name>` | Run a routine now |
+| `/memory [topic]` | What I remember (profile, or one topic) |
+| `/forget <topic>` | Delete a memory topic |
+| `/usage` | Spend today, this month, top 5 tasks |
+| `/tasks` | Recent tasks and their status |
+| `/raise [usd]` | Lift this month's budget cap (default: one more monthly budget) |
 
 Messages sent while a task is running wait their turn. Conversations survive restarts.
+
+### Routines
+
+Ask for something on a schedule: *"Every weekday at 8am, summarise the files changed in
+/workspace yesterday"*. The agent proposes a routine and you approve it; the approval shows
+the schedule in plain words ("At 08:00, Monday through Friday (America/Toronto)"). Each run
+uses a fresh session, so routines don't clutter your chat, and its result is sent to you.
+A routine that finds nothing worth reporting stays silent. Approvals a routine needs wait
+for you (12 hours by default) without blocking the chat.
+
+### Memory
+
+Say *"remember that I prefer metric units"*. Facts are stored as Markdown in the `memory`
+volume (`profile.md`, plus one file per topic) and indexed in Postgres. The profile is in
+every conversation; other topics are looked up when needed. Memory is only written from
+your own messages: the agent can't save anything during a routine, or after it has read a
+file, command output, web page or email in the same task.
+
+### Spending limits
+
+`MONTHLY_BUDGET_USD` and `TASK_BUDGET_USD` are checked before every model call. You get a
+warning at 80% and a hard stop at 100%. `MAX_TURNS_PER_TASK` (default 40) stops runaway
+loops. Transient OpenRouter errors are retried with exponential backoff.
 
 ### What needs approval
 
@@ -84,6 +114,9 @@ edit it and run `make restart`). Defaults:
 - **Asks you first:** every other command (running programs, installing packages, deleting
   or moving files, redirects that write files), and read-only commands that look outside
   the workspace.
+- **Taint rule:** once a task has read files, command output, web pages or email, writes
+  and edits ask too, even inside `/workspace`.
+- **Routines:** creating or deleting one always asks.
 - **Always refused:** writes outside `/workspace`, `rm -rf /`-style commands, fork bombs,
   reading `/proc/*/environ`, reaching the database or agent containers.
 

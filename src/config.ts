@@ -14,6 +14,20 @@ const intFromEnv = (def: number, min = 1) =>
       return n;
     });
 
+const usdFromEnv = (def: number) =>
+  z
+    .string()
+    .optional()
+    .transform((v, ctx) => {
+      if (v === undefined || v.trim() === "") return def;
+      const n = Number(v);
+      if (!Number.isFinite(n) || n <= 0) {
+        ctx.addIssue({ code: "custom", message: `must be a positive number of dollars, got "${v}"` });
+        return z.NEVER;
+      }
+      return n;
+    });
+
 export const MODEL_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._:-]*$/i;
 
 const schema = z.object({
@@ -45,12 +59,20 @@ const schema = z.object({
   APPROVAL_TIMEOUT_SECONDS: intFromEnv(600),
   TOOL_TIMEOUT_SECONDS: intFromEnv(120),
   MAX_TOOL_OUTPUT_CHARS: intFromEnv(20000),
+  // Phase 2: routines and limits
+  MONTHLY_BUDGET_USD: usdFromEnv(20),
+  TASK_BUDGET_USD: usdFromEnv(1),
+  MAX_TURNS_PER_TASK: intFromEnv(40),
+  // Routine approvals wait for you; pg-boss caps a job at 24 h, so keep this under 23 h.
+  ROUTINE_APPROVAL_TIMEOUT_SECONDS: intFromEnv(43200).refine((n) => n <= 82800, "must be at most 82800 (23 hours)"),
+  MODEL_MAX_RETRIES: intFromEnv(4, 0),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
   TZ: z.string().default("America/Toronto"),
   // Not in the user-facing .env; defaults suit the Docker setup.
   HTTP_HOST: z.string().default("0.0.0.0"),
   HTTP_PORT: intFromEnv(8080, 0),
   DATA_DIR: z.string().default("/data"),
+  MEMORY_DIR: z.string().default("/memory"),
   POLICY_FILE: z.string().default("config/policy.yaml"),
   WORKSPACE_DIR: z.string().default("/workspace"),
   TELEGRAM_API_ROOT: z.string().url().optional(),

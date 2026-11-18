@@ -1,5 +1,5 @@
-import { GrammyError, InlineKeyboard, type Api } from "grammy";
-import type { ApprovalNotifier, ApprovalOutcome } from "../approvals/service.ts";
+import { GrammyError, InlineKeyboard, InputFile, type Api } from "grammy";
+import type { ApprovalDetails, ApprovalNotifier, ApprovalOutcome } from "../approvals/service.ts";
 import { encodeCallback } from "../approvals/state.ts";
 import type { ApprovalRow } from "../db/repo.ts";
 import type { Logger } from "../logger.ts";
@@ -29,13 +29,16 @@ function formatDuration(seconds: number): string {
   return m < 120 ? `${m} min` : `${Math.round(m / 60)} h`;
 }
 
-export function approvalText(command: string, reason: string, timeoutSeconds: number): string {
+export function approvalText(command: string, reason: string, timeoutSeconds: number, policyReason?: string): string {
   return [
     "🔐 <b>Approval needed</b>",
     `<pre>${escapeHtml(command.length > 3000 ? `${command.slice(0, 3000)}…` : command)}</pre>`,
     `<i>${escapeHtml(reason.length > 500 ? `${reason.slice(0, 500)}…` : reason)}</i>`,
+    policyReason ? `Why: ${escapeHtml(policyReason)}` : undefined,
     `Expires in ${formatDuration(timeoutSeconds)}.`,
-  ].join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 export function approvalKeyboard(id: string): InlineKeyboard {
@@ -117,8 +120,15 @@ export class TelegramUi implements TaskNotifier, ApprovalNotifier {
     };
   }
 
-  async sendApprovalRequest(approval: ApprovalRow, details: { command: string; reason: string; timeoutSeconds: number }) {
-    const msg = await this.api.sendMessage(approval.chat_id, approvalText(details.command, details.reason, details.timeoutSeconds), {
+  async sendPhoto(chatId: number, image: Buffer, caption: string): Promise<void> {
+    await this.api.sendPhoto(chatId, new InputFile(image, "screenshot.png"), { caption: caption.slice(0, 1000) });
+  }
+
+  async sendApprovalRequest(approval: ApprovalRow, details: ApprovalDetails) {
+    for (const a of details.attachments ?? []) {
+      await this.sendPhoto(approval.chat_id, a.data, a.caption).catch((err: unknown) => this.log.warn({ err }, "could not send attachment"));
+    }
+    const msg = await this.api.sendMessage(approval.chat_id, approvalText(details.command, details.reason, details.timeoutSeconds, details.policyReason), {
       parse_mode: "HTML",
       reply_markup: approvalKeyboard(approval.id),
     });

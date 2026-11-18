@@ -139,3 +139,27 @@ describe("file tools", () => {
     expect(classify({ tool: "mystery", args: {} }, rules).decision).toBe("ask");
   });
 });
+
+describe("taint rule and Phase 2 tools", () => {
+  it("writes ask once the task has read untrusted content", () => {
+    expect(classify({ tool: "write", args: { path: "a.txt" }, tainted: false }, rules).decision).toBe("allow");
+    const r = classify({ tool: "write", args: { path: "a.txt" }, tainted: true }, rules);
+    expect(r.decision).toBe("ask");
+    expect(r.reason).toContain("untrusted content");
+    expect(classify({ tool: "edit", args: { path: "a.txt" }, tainted: true }, rules).decision).toBe("ask");
+  });
+  it("reads stay allowed and denies stay denied when tainted", () => {
+    expect(classify({ tool: "read", args: { path: "a.txt" }, tainted: true }, rules).decision).toBe("allow");
+    expect(classify({ tool: "bash", args: { command: "ls" }, tainted: true }, rules).decision).toBe("allow");
+    expect(classify({ tool: "write", args: { path: "/etc/x" }, tainted: true }, rules).decision).toBe("deny");
+  });
+  it("routine changes ask, listing and memory are allowed", () => {
+    expect(classify({ tool: "create_schedule", args: {} }, rules).decision).toBe("ask");
+    expect(classify({ tool: "delete_schedule", args: {} }, rules).decision).toBe("ask");
+    expect(classify({ tool: "list_schedules", args: {} }, rules).decision).toBe("allow");
+    expect(classify({ tool: "remember", args: {} }, rules).decision).toBe("allow");
+  });
+  it("invalid preflight arguments are denied without asking", () => {
+    expect(classify({ tool: "create_schedule", args: {}, context: { invalid: "bad cron" } }, rules)).toEqual({ decision: "deny", reason: "bad cron" });
+  });
+});

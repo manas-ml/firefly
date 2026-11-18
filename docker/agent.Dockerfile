@@ -24,7 +24,7 @@ COPY package.json ./
 COPY migrations ./migrations
 COPY config ./config
 # /workspace exists only so Pi has a valid cwd; files live in the sandbox container.
-RUN mkdir -p /data /workspace && chown node:node /data
+RUN mkdir -p /data /memory /workspace && chown node:node /data /memory
 USER node
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \

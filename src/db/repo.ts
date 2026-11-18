@@ -22,6 +22,8 @@ export interface TaskRow {
   started_at: Date | null;
   finished_at: Date | null;
   error: string | null;
+  kind: "chat" | "routine";
+  schedule_id: string | null;
 }
 
 export interface ApprovalRow {
@@ -74,13 +76,28 @@ export class Repo {
 
   // ---------- tasks ----------
 
-  async createTask(chatId: number, messageId: number | null, prompt: string): Promise<TaskRow> {
+  async createTask(
+    chatId: number,
+    messageId: number | null,
+    prompt: string,
+    opts: { kind?: "chat" | "routine"; scheduleId?: string } = {},
+  ): Promise<TaskRow> {
     await this.ensureChat(chatId);
     const r = await this.pool.query<TaskRow>(
-      "INSERT INTO tasks (chat_id, message_id, prompt) VALUES ($1, $2, $3) RETURNING *",
-      [chatId, messageId, prompt],
+      "INSERT INTO tasks (chat_id, message_id, prompt, kind, schedule_id) VALUES ($1, $2, $3, $4, $5) RETURNING *",
+      [chatId, messageId, prompt, opts.kind ?? "chat", opts.scheduleId ?? null],
     );
     return r.rows[0]!;
+  }
+
+  async listRecentTasks(chatId: number, limit = 10): Promise<(TaskRow & { cost: number; schedule_name: string | null })[]> {
+    const r = await this.pool.query<TaskRow & { cost: number; schedule_name: string | null }>(
+      `SELECT t.*, COALESCE((SELECT sum(cost_usd) FROM usage u WHERE u.task_id = t.id), 0)::float8 AS cost, s.name AS schedule_name
+       FROM tasks t LEFT JOIN schedules s ON s.id = t.schedule_id
+       WHERE t.chat_id = $1 ORDER BY t.created_at DESC LIMIT $2`,
+      [chatId, limit],
+    );
+    return r.rows;
   }
 
   async getTask(id: string): Promise<TaskRow | undefined> {
@@ -103,7 +120,7 @@ export class Repo {
 
   async countQueued(chatId: number): Promise<number> {
     const r = await this.pool.query<{ n: number }>(
-      "SELECT count(*)::int AS n FROM tasks WHERE chat_id = $1 AND status = 'queued'",
+      "SELECT count(*)::int AS n FROM tasks WHERE chat_id = $1 AND status = 'queued' AND kind = 'chat'",
       [chatId],
     );
     return r.rows[0]?.n ?? 0;

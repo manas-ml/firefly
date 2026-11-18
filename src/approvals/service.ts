@@ -1,5 +1,6 @@
 import type { ApprovalRow, Repo } from "../db/repo.ts";
 import type { Logger } from "../logger.ts";
+import type { ApprovalAttachment } from "../agent/tools.ts";
 import { checkResolve, type ApprovalAction, type ResolveCheck } from "./state.ts";
 
 export type ApprovalOutcome = "approved" | "denied" | "expired" | "cancelled";
@@ -7,9 +8,17 @@ export type ApprovalOutcome = "approved" | "denied" | "expired" | "cancelled";
 /** Implemented by the Telegram layer. */
 export interface ApprovalNotifier {
   /** Send the Approve/Deny message; returns its Telegram message id. */
-  sendApprovalRequest(approval: ApprovalRow, details: { command: string; reason: string; timeoutSeconds: number }): Promise<number | undefined>;
+  sendApprovalRequest(approval: ApprovalRow, details: ApprovalDetails): Promise<number | undefined>;
   /** Edit the approval message to show how it ended. */
   showApprovalOutcome(approval: ApprovalRow, outcome: ApprovalOutcome): Promise<void>;
+}
+
+export interface ApprovalDetails {
+  command: string;
+  reason: string;
+  policyReason?: string;
+  timeoutSeconds: number;
+  attachments?: ApprovalAttachment[];
 }
 
 export interface ApprovalRequest {
@@ -20,6 +29,11 @@ export interface ApprovalRequest {
   command: string;
   /** What the agent said it was doing. */
   reason: string;
+  /** Why the policy wants approval. */
+  policyReason?: string;
+  /** Overrides the default timeout (routines wait longer). */
+  timeoutSeconds?: number;
+  attachments?: ApprovalAttachment[];
   signal?: AbortSignal;
 }
 
@@ -40,7 +54,8 @@ export class ApprovalService {
   ) {}
 
   async request(req: ApprovalRequest): Promise<ApprovalOutcome> {
-    const expiresAt = new Date(this.now().getTime() + this.timeoutSeconds * 1000);
+    const timeoutSeconds = req.timeoutSeconds ?? this.timeoutSeconds;
+    const expiresAt = new Date(this.now().getTime() + timeoutSeconds * 1000);
     const summary = req.command.slice(0, 3000);
     const approval = await this.repo.createApproval({
       taskId: req.taskId,
@@ -61,7 +76,9 @@ export class ApprovalService {
         const messageId = await this.notifier.sendApprovalRequest(approval, {
           command: req.command,
           reason: req.reason,
-          timeoutSeconds: this.timeoutSeconds,
+          policyReason: req.policyReason,
+          timeoutSeconds,
+          attachments: req.attachments,
         });
         if (messageId !== undefined) await this.repo.setApprovalMessage(approval.id, messageId);
       } catch (err) {

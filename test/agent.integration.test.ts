@@ -48,7 +48,6 @@ async function makeRuntime(dataDir: string, approvalTimeout = 600) {
     dataDir,
     workspace: sb.workspace,
     toolTimeoutSeconds: 30,
-    approvalTimeoutSeconds: approvalTimeout,
     maxOutputChars: 20000,
     systemPrompt: await loadSystemPrompt(),
   });
@@ -60,7 +59,17 @@ const hooks = { onToolStart: () => {}, onWaitingApproval: () => {} };
 
 async function runPrompt(chatId: number, prompt: string, signal = new AbortController().signal) {
   const task = await repo.createTask(chatId, 1, prompt);
-  const result = await runtime.run({ chatId, taskId: task.id, prompt, signal, hooks });
+  const result = await runtime.run({
+    chatId,
+    taskId: task.id,
+    prompt,
+    signal,
+    hooks,
+    session: "chat",
+    trigger: "user",
+    approvalTimeoutSeconds: 600,
+    maxTurns: 40,
+  });
   return { task, result };
 }
 

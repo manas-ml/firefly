@@ -10,6 +10,10 @@ export interface ToolCall {
   args: Record<string, unknown>;
   /** Working directory the tool resolves relative paths against. */
   cwd?: string;
+  /** The task has already read untrusted content (taint rule). */
+  tainted?: boolean;
+  /** Facts gathered before the call, e.g. the browser element a click targets. */
+  context?: Record<string, unknown>;
 }
 
 const RANK: Record<Decision, number> = { allow: 0, ask: 1, deny: 2 };

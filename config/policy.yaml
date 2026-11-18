@@ -19,7 +19,19 @@ tools:
   read: allow        # inside read_roots; outside -> deny
   write: allow       # inside writable_roots; outside -> deny
   edit: allow        # inside writable_roots; outside -> deny
+  # Routines: creating or deleting one always needs approval.
+  list_schedules: allow
+  create_schedule: ask
+  delete_schedule: ask
+  # Memory: the remember tool itself refuses anything not from the owner's own message.
+  remember: allow
+  recall: allow
   default: ask       # any tool not listed here
+
+# Taint rule: once a task has read untrusted content (files, command output,
+# web pages, email), these tools ask even when they'd normally be allowed.
+taint:
+  write_tools: [write, edit]
 
 bash:
   # Programs that only read. A command made only of these runs without asking,

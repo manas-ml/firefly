@@ -23,6 +23,22 @@ export function resolveToolPath(raw: string, cwd: string): string | undefined {
  * Safety lives here and in the sandbox, never in the system prompt.
  */
 export function classify(call: ToolCall, rules: PolicyRules): PolicyResult {
+  const base = classifyBase(call, rules);
+  if (base.decision === "allow" && call.tainted && isTaintedWrite(call, rules)) {
+    return { decision: "ask", reason: `${base.reason}, after reading untrusted content in this task` };
+  }
+  return base;
+}
+
+function isTaintedWrite(call: ToolCall, rules: PolicyRules): boolean {
+  return rules.taint.write_tools.some((pattern) =>
+    pattern.endsWith("*") ? call.tool.startsWith(pattern.slice(0, -1)) : pattern === call.tool,
+  );
+}
+
+function classifyBase(call: ToolCall, rules: PolicyRules): PolicyResult {
+  // A preflight check found the arguments invalid (e.g. a malformed cron): refuse before asking anyone.
+  if (typeof call.context?.invalid === "string") return { decision: "deny", reason: call.context.invalid };
   const cwd = call.cwd ?? rules.workspace;
   const configured = rules.tools[call.tool];
 

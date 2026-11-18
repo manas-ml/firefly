@@ -10,6 +10,13 @@ const rulesSchema = z.object({
   read_roots: z.array(absPath).min(1),
   writable_roots: z.array(absPath).min(1),
   tools: z.record(z.string(), decision).default({}),
+  taint: z
+    .object({
+      // Tools that change something. Once a task has read untrusted content, these
+      // ask even when they would normally be allowed.
+      write_tools: z.array(z.string()).default([]),
+    })
+    .default({ write_tools: [] }),
   bash: z.object({
     read_only_commands: z.array(z.string()).default([]),
     non_path_commands: z.array(z.string()).default([]),

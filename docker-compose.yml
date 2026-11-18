@@ -67,6 +67,7 @@ services:
       HTTP_PORT: "8080"
     volumes:
       - sessions:/data
+      - memory:/memory
       - ./config/policy.yaml:/app/config/policy.yaml:ro
     ports:
       - "127.0.0.1:${HEALTH_PORT:-8080}:8080"
@@ -92,3 +93,4 @@ volumes:
   pgdata:
   sessions:
   workspace:
+  memory:

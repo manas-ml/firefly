@@ -17,6 +17,11 @@ import { Orchestrator } from "./orchestrator/orchestrator.ts";
 import { loadPolicyRules } from "./policy/rules.ts";
 import { COMMANDS, registerHandlers } from "./telegram/bot.ts";
 import { TelegramUi } from "./telegram/ui.ts";
+import { BudgetService } from "./budget/budget.ts";
+import { MemoryStore } from "./memory/store.ts";
+import { createMemoryTools } from "./memory/tools.ts";
+import { SchedulerService } from "./scheduler/service.ts";
+import { createScheduleTools } from "./scheduler/tools.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -26,12 +31,16 @@ export interface AppOverrides {
   migrationsDir?: string;
   /** Telegram timing (tests shorten these). */
   ui?: { editIntervalMs: number; typingIntervalMs: number };
+  /** pg-boss timing (tests make cron checks frequent). */
+  boss?: { cronMonitorIntervalSeconds?: number; cronWorkerIntervalSeconds?: number };
 }
 
 export interface App {
   stop(): Promise<void>;
   orchestrator: Orchestrator;
   runtime: AgentRuntime;
+  scheduler: SchedulerService;
+  memory: MemoryStore;
   httpPort: number;
 }
 
@@ -60,13 +69,17 @@ export async function startApp(config: Config, log: Logger, overrides: AppOverri
   const models = overrides.models ?? (await createOpenRouterRuntime(config.DATA_DIR, config.OPENROUTER_API_KEY));
   if (!models.resolveModel(config.MODEL)) throw new Error(`MODEL ${config.MODEL} is not a known OpenRouter model`);
 
-  const boss = new PgBoss({ connectionString: config.DATABASE_URL });
+  const boss = new PgBoss({ connectionString: config.DATABASE_URL, ...overrides.boss });
   boss.on("error", (err) => log.error({ err }, "pg-boss error"));
   await boss.start();
 
   const bot = new Bot(config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_API_ROOT ? { client: { apiRoot: config.TELEGRAM_API_ROOT } } : {});
   const ui = new TelegramUi(bot.api, log, overrides.ui);
   const approvals = new ApprovalService(repo, ui, config.APPROVAL_TIMEOUT_SECONDS, log);
+  const memory = new MemoryStore(config.MEMORY_DIR, pool);
+  await memory.init();
+  const scheduler = new SchedulerService(boss, pool, log, config.TZ);
+  const budget = new BudgetService(pool, { monthlyUsd: config.MONTHLY_BUDGET_USD, taskUsd: config.TASK_BUDGET_USD, timezone: config.TZ });
   const runtime = new AgentRuntime({
     repo,
     log,
@@ -79,12 +92,36 @@ export async function startApp(config: Config, log: Logger, overrides: AppOverri
     dataDir: config.DATA_DIR,
     workspace: rules.workspace,
     toolTimeoutSeconds: config.TOOL_TIMEOUT_SECONDS,
-    approvalTimeoutSeconds: config.APPROVAL_TIMEOUT_SECONDS,
     maxOutputChars: config.MAX_TOOL_OUTPUT_CHARS,
     systemPrompt: await loadSystemPrompt(),
+    modelMaxRetries: config.MODEL_MAX_RETRIES,
+    toolFactories: [(getRun) => createMemoryTools(memory, getRun), (getRun) => createScheduleTools(scheduler, getRun)],
+    getPromptAddendum: async () => {
+      const profile = await memory.profileForPrompt();
+      return profile
+        ? `What you know about the owner, from their own messages (more topics via the recall tool):\n\n${profile}`
+        : "You don't know anything about the owner yet. When they tell you something to remember, use the remember tool.";
+    },
   });
   await runtime.init();
-  const orchestrator = new Orchestrator(boss, repo, runtime, ui, log);
+  const orchestrator = new Orchestrator(
+    boss,
+    repo,
+    runtime,
+    ui,
+    log,
+    {
+      concurrency: 4,
+      jobTimeoutSeconds: 24 * 3600, // pg-boss maximum; covers a routine waiting for approval
+      approvalTimeoutSeconds: config.APPROVAL_TIMEOUT_SECONDS,
+      routineApprovalTimeoutSeconds: config.ROUTINE_APPROVAL_TIMEOUT_SECONDS,
+      maxTurnsPerTask: config.MAX_TURNS_PER_TASK,
+    },
+    budget,
+  );
+  scheduler.setFireHandler(async (schedule) => {
+    await orchestrator.enqueueRoutine(schedule);
+  });
 
   registerHandlers(bot, {
     allowedUserIds: config.TELEGRAM_ALLOWED_USER_IDS,
@@ -95,6 +132,10 @@ export async function startApp(config: Config, log: Logger, overrides: AppOverri
     ui,
     log,
     approvalTimeoutSeconds: config.APPROVAL_TIMEOUT_SECONDS,
+    timezone: config.TZ,
+    scheduler,
+    memory,
+    budget,
   });
 
   let polling = false;
@@ -110,6 +151,7 @@ export async function startApp(config: Config, log: Logger, overrides: AppOverri
   await bot.init();
   await bot.api.setMyCommands(COMMANDS).catch((err: unknown) => log.warn({ err }, "could not set bot commands"));
   await orchestrator.start();
+  await scheduler.start();
 
   const pollingDone = bot
     .start({
@@ -127,6 +169,8 @@ export async function startApp(config: Config, log: Logger, overrides: AppOverri
   return {
     orchestrator,
     runtime,
+    scheduler,
+    memory,
     httpPort,
     stop: async () => {
       log.info("shutting down");

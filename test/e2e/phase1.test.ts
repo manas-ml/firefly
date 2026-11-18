@@ -51,6 +51,7 @@ async function boot(): Promise<App> {
     HTTP_HOST: "127.0.0.1",
     HTTP_PORT: "0",
     DATA_DIR: dataDir,
+    MEMORY_DIR: path.join(dataDir, "memory"),
     POLICY_FILE: policyFile,
     LOG_LEVEL: "info",
   });
