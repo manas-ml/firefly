@@ -1,0 +1,86 @@
+# Policy rules for tool calls. Edit and restart the agent (`docker compose restart agent`).
+#
+# Every tool call is classified as allow, ask or deny before it runs.
+# For bash, the command is parsed (pipelines, &&, ;, subshells, $(...)) and the
+# strictest decision across all of its parts wins. Unparseable commands -> ask.
+
+workspace: /workspace
+
+# The read tool and read-only bash commands may only touch these directories.
+read_roots:
+  - /workspace
+
+# write/edit, and bash commands with write intent, may only touch these.
+# A write to anywhere else is denied outright.
+writable_roots:
+  - /workspace
+
+tools:
+  read: allow        # inside read_roots; outside -> deny
+  write: allow       # inside writable_roots; outside -> deny
+  edit: allow        # inside writable_roots; outside -> deny
+  default: ask       # any tool not listed here
+
+bash:
+  # Programs that only read. A command made only of these runs without asking,
+  # as long as it has no output redirect, no unsafe flag (below) and no path
+  # argument outside read_roots (which makes it ask).
+  read_only_commands:
+    - ls
+    - cat
+    - head
+    - tail
+    - wc
+    - grep
+    - rg
+    - find
+    - pwd
+    - echo
+    - which
+    - jq
+    - cd
+    - "true"
+
+  # Programs whose arguments are not file paths (skip the read_roots check).
+  non_path_commands:
+    - echo
+    - pwd
+    - which
+    - "true"
+
+  # Flags that make an otherwise read-only program write files or run programs.
+  unsafe_flags:
+    find: [-delete, -exec, -execdir, -ok, -okdir, -fprint, -fprint0, -fprintf, -fls]
+    rg: [--pre, --pre-glob, --search-zip, -z]
+    grep: []
+    jq: [--rawfile, --slurpfile]
+
+  # git is read-only only for these subcommands, called without global options
+  # (no `git -c ...`) and without the unsafe flags below.
+  git:
+    read_only_subcommands: [status, log, diff, show]
+    unsafe_flags: [--output, --ext-diff, --textconv, --exec, --upload-pack, --no-index]
+
+  # Programs that modify files. Path arguments outside writable_roots -> deny.
+  # Inside -> ask (every bash command that isn't read-only asks).
+  write_commands: [rm, rmdir, mv, touch, mkdir, tee, chmod, chown, chgrp, unlink, truncate, shred]
+  # Programs where only the destination (last path argument, or -t DIR) is written.
+  destination_commands: [cp, ln, install, rsync]
+
+  # Checked against the raw command text, including text inside quotes,
+  # so `bash -c "..."` doesn't hide them.
+  deny_patterns:
+    - pattern: '/proc/[^\s/]*/environ'
+      reason: reads another process's environment
+    - pattern: '\brm\s+(-[a-zA-Z]*\s+)*-[a-zA-Z]*[rR][a-zA-Z]*\s+(-[a-zA-Z]*\s+)*(/|/\*|~/?|\$HOME/?)(\s|$|;|&|\||["''`)])'
+      reason: recursive delete of / or home
+    - pattern: ':\s*\(\s*\)\s*\{[^}]*:\s*\|\s*:'
+      reason: fork bomb
+    - pattern: '\b(postgres|firefly-postgres|firefly-agent)\b'
+      reason: reaches the postgres or agent container
+    - pattern: '(://|@|/dev/(tcp|udp)/)agent\b|\bagent:\d+'
+      reason: reaches the agent container
+    - pattern: ':5432\b|\b(psql|pg_dump|pg_isready)\b'
+      reason: reaches the database
+    - pattern: '\bdocker\.sock\b'
+      reason: touches the Docker socket
