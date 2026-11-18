@@ -148,3 +148,51 @@ test/                         vitest unit tests + e2e (fake Telegram Bot API + P
 - `agent/tools.ts` registers tools from a list (Phase 2 schedule/memory tools, Phase 3 browser/MCP).
 - `orchestrator/queue.ts` exposes `enqueueRun()` (Phase 2 cron schedules enqueue the same job).
 - `usage` table is written per model call (Phase 2 budget enforcement reads it).
+
+## 7. Further deviations made while building
+
+- `tool_calls` has an extra `outcome` column (`executed`, `denied_by_policy`, `denied_by_owner`,
+  `expired`, `cancelled`, `error`) so the audit log shows what actually happened, not just the
+  policy decision.
+- Read-only allowlist additionally contains `cd`, `true`, `date` and `git show` (all harmless).
+- Pi runs with thinking level `low` (DeepSeek V4.1 Flash is a reasoning model; `off` hurts
+  tool use, `high` costs more). Not configurable yet.
+- A graceful shutdown (`docker compose restart agent`) aborts running tasks and records them
+  as `failed / interrupted` with a Telegram notice, same as a crash, rather than `cancelled`.
+- `/approvals` re-posts each pending approval with live buttons, in case the original message
+  scrolled away.
+- The official `postgres:17-alpine` entrypoint starts as root and drops to `postgres` for the
+  server process. "Non-root in all images" applies to the two images built here.
+- `pnpm test` runs only tests that need nothing but Node. The DB-backed integration test and
+  the acceptance suite run with `make test-e2e`, which starts its own Postgres container.
+
+## 8. Acceptance results
+
+Automated in `test/e2e/acceptance.test.ts`. It runs the real `startApp()` wiring: grammY
+long polling against a fake Bot API that validates HTML like Telegram does, pg-boss on
+Postgres 17, the Pi agent loop, the policy engine, approvals and the real sandbox server.
+Pi's scripted faux provider stands in for OpenRouter. Checks marked "Docker" were run
+against the compose stack.
+
+| # | Test | Result |
+| --- | --- | --- |
+| 1 | Non-allowed account gets no reply, is logged | Pass (e2e + Docker) |
+| 2 | "What files…" runs `ls` without asking | Pass |
+| 3 | hello.py written without asking; python asks; Approve runs, Deny explained | Pass |
+| 4 | Unanswered approval expires, agent told | Pass |
+| 5 | `/stop` kills `sleep 300` within 5 s | Pass (well under 1 s) |
+| 6 | `SANDBOX_INTERNET=false`: `curl https://example.com` fails in sandbox | Pass (Docker); sandbox also can't reach Postgres |
+| 7 | `read /etc/passwd` rejected | Pass (policy deny, plus sandbox realpath check) |
+| 8 | Injected "rm -rf /workspace" doesn't run without approval | Pass, with a scripted model that falls for the injection |
+| 9 | `docker compose restart agent` keeps the conversation | Pass (e2e restart; Docker restart and crash recovery) |
+| 10 | >4096-char reply split cleanly, code blocks intact | Pass |
+| 11 | `pnpm test` passes; `docker compose up` from clean clone | Pass. Both images build; the stack comes up healthy |
+
+Not verifiable in the build environment, still to do on the Mac mini:
+- Real OpenRouter and Telegram traffic: no keys here, and the build container can't reach
+  `openrouter.ai`. In Docker, a message went all the way to the model call and the
+  connection error came back to the chat correctly.
+- Test 8 with the real DeepSeek model, to see whether it resists the injection on its own.
+  The policy stops the `rm` either way.
+- `SANDBOX_INTERNET=true` reaching the internet. The override attaches a separate egress
+  network (checked with `docker compose config`); this environment blocks container egress.
