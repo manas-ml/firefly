@@ -10,6 +10,7 @@ FROM base AS build
 RUN pnpm install --frozen-lockfile
 COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
+COPY dashboard ./dashboard
 RUN pnpm build
 
 FROM base AS prod-deps
@@ -27,6 +28,6 @@ COPY config ./config
 RUN mkdir -p /data /memory /workspace && chown node:node /data /memory
 USER node
 EXPOSE 8080
-HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+HEALTHCHECK --interval=10s --timeout=5s --start-period=60s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 CMD ["node", "dist/main.js"]

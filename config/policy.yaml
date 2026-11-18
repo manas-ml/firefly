@@ -36,6 +36,8 @@ tools:
   browser_close: allow
   # Using a vault secret always asks.
   vault_fill: ask
+  # Mac host bridge (Phase 4, off unless MAC_BRIDGE_URL is set): always asks.
+  mac_shortcut: ask
   # MCP tools are tagged read (allow) or write (ask) in config/mcp.yaml.
   default: ask       # any tool not listed here
 

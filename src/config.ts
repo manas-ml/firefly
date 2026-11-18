@@ -71,6 +71,11 @@ const schema = z.object({
   BROWSER_TOKEN: z.string().min(24, "use at least 24 random characters").optional(),
   VAULT_KEY_FILE: z.string().default("/run/secrets/vault_master_key"),
   MCP_CONFIG: z.string().default("config/mcp.yaml"),
+  // Phase 4: dashboard, health report, Mac bridge
+  DASHBOARD_TOKEN: z.string().min(24, "use at least 24 random characters").optional(),
+  HEALTH_REPORT_CRON: z.string().default("17 9 * * 1"),
+  MAC_BRIDGE_URL: z.string().url().optional(),
+  MAC_BRIDGE_TOKEN_FILE: z.string().default("/run/secrets/mac_bridge_token"),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
   TZ: z.string().default("America/Toronto"),
   // Not in the user-facing .env; defaults suit the Docker setup.

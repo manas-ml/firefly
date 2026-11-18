@@ -10,8 +10,9 @@ export interface HealthChecks {
  * Health endpoint only. The sandbox can reach this port over the internal
  * network, so it must never expose anything sensitive.
  */
-export function createHttpServer(checks: HealthChecks): FastifyInstance {
+export function createHttpServer(checks: HealthChecks, extend?: (app: FastifyInstance) => void): FastifyInstance {
   const app = Fastify({ logger: false });
+  extend?.(app);
   app.get("/health", async (_req, reply) => {
     const [db, sandbox] = await Promise.all([checks.db().catch(() => false), checks.sandbox().catch(() => false)]);
     const telegram = checks.telegram();

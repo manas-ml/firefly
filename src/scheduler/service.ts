@@ -75,6 +75,7 @@ export class SchedulerService {
     const invalid = validateCron(input.cron, timezone);
     if (invalid) throw new Error(invalid);
     if (!input.prompt.trim()) throw new Error("prompt is required");
+    await this.pool.query("INSERT INTO chats (id) VALUES ($1) ON CONFLICT (id) DO NOTHING", [input.chatId]);
     const r = await this.pool.query<ScheduleRow>(
       `INSERT INTO schedules (chat_id, name, cron, timezone, prompt) VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (chat_id, name) DO UPDATE SET cron = EXCLUDED.cron, timezone = EXCLUDED.timezone,

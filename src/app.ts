@@ -29,6 +29,11 @@ import { McpManager } from "./mcp/manager.ts";
 import { registerVaultCommands } from "./telegram/commands/vault.ts";
 import { Vault } from "./vault/vault.ts";
 import { setLogRedactor } from "./logger.ts";
+import { HealthReporter } from "./control/health-report.ts";
+import { Settings } from "./control/settings.ts";
+import { registerDashboard } from "./http/dashboard.ts";
+import { registerControlCommands } from "./telegram/commands/control.ts";
+import { createMacShortcutTool, readBridgeToken } from "./mac/tools.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -48,6 +53,7 @@ export interface App {
   runtime: AgentRuntime;
   scheduler: SchedulerService;
   memory: MemoryStore;
+  settings: Settings;
   httpPort: number;
 }
 
@@ -66,6 +72,7 @@ export async function startApp(config: Config, log: Logger, overrides: AppOverri
   const rules = loadPolicyRules(fromRoot(config.POLICY_FILE));
   log.info({ workspace: rules.workspace }, "policy loaded");
 
+  const startedAt = new Date();
   const pool = createPool(config.DATABASE_URL);
   await waitFor(async () => (await pool.query("SELECT 1")).rowCount === 1, "postgres", log);
   await migrate(pool, overrides.migrationsDir ?? path.join(ROOT, "migrations"), (m) => log.info(m));
@@ -84,6 +91,11 @@ export async function startApp(config: Config, log: Logger, overrides: AppOverri
   if (browser) await waitFor(() => browser.health(), "browser", log);
   else log.info("no BROWSER_URL; browser tools disabled");
 
+  // The Mac bridge is off unless MAC_BRIDGE_URL is set and its token file has a token.
+  const macToken = config.MAC_BRIDGE_URL ? readBridgeToken(config.MAC_BRIDGE_TOKEN_FILE) : undefined;
+  const macBridge = config.MAC_BRIDGE_URL && macToken ? { url: config.MAC_BRIDGE_URL, token: macToken } : undefined;
+  if (config.MAC_BRIDGE_URL && !macToken) log.warn("MAC_BRIDGE_URL is set but there is no bridge token; Mac bridge disabled");
+
   const resolveSecret = (v: string) => (v.startsWith("vault:") ? vault.reveal(v) : v);
   const mcp = new McpManager(loadMcpConfig(fromRoot(config.MCP_CONFIG)), log, resolveSecret);
   await mcp.connect();
@@ -101,7 +113,8 @@ export async function startApp(config: Config, log: Logger, overrides: AppOverri
   const approvals = new ApprovalService(repo, ui, config.APPROVAL_TIMEOUT_SECONDS, log);
   const memory = new MemoryStore(config.MEMORY_DIR, pool);
   await memory.init();
-  const scheduler = new SchedulerService(boss, pool, log, config.TZ);
+  const settings = new Settings(pool);
+  const scheduler = new SchedulerService(boss, pool, log, config.TZ, () => settings.isPaused());
   const budget = new BudgetService(pool, { monthlyUsd: config.MONTHLY_BUDGET_USD, taskUsd: config.TASK_BUDGET_USD, timezone: config.TZ });
   const runtime = new AgentRuntime({
     repo,
@@ -126,6 +139,7 @@ export async function startApp(config: Config, log: Logger, overrides: AppOverri
       (getRun) =>
         vault.enabled ? [createVaultTool(vault, { browser, sandbox, toolTimeoutSeconds: config.TOOL_TIMEOUT_SECONDS, workspace: rules.workspace }, getRun)] : [],
       () => mcp.tools(),
+      () => (macBridge ? [createMacShortcutTool(macBridge.url, macBridge.token)] : []),
     ],
     getPromptAddendum: async () => {
       const profile = await memory.profileForPrompt();
@@ -147,11 +161,25 @@ export async function startApp(config: Config, log: Logger, overrides: AppOverri
       approvalTimeoutSeconds: config.APPROVAL_TIMEOUT_SECONDS,
       routineApprovalTimeoutSeconds: config.ROUTINE_APPROVAL_TIMEOUT_SECONDS,
       maxTurnsPerTask: config.MAX_TURNS_PER_TASK,
+      isPaused: () => settings.isPaused(),
     },
     budget,
   );
   scheduler.setFireHandler(async (schedule) => {
     await orchestrator.enqueueRoutine(schedule);
+  });
+  const health = new HealthReporter({
+    pool,
+    boss,
+    sandbox,
+    log,
+    send: (chatId, md) => ui.sendMarkdown(chatId, md),
+    chatIds: config.TELEGRAM_ALLOWED_USER_IDS,
+    dataDir: config.DATA_DIR,
+    workspace: rules.workspace,
+    timezone: config.TZ,
+    cron: config.HEALTH_REPORT_CRON,
+    startedAt,
   });
 
   registerHandlers(bot, {
@@ -167,7 +195,10 @@ export async function startApp(config: Config, log: Logger, overrides: AppOverri
     scheduler,
     memory,
     budget,
-    extraHandlers: [(b) => registerVaultCommands(b, { vault, log })],
+    extraHandlers: [
+      (b) => registerControlCommands(b, { settings, report: (chatId) => health.sendTo(chatId) }),
+      (b) => registerVaultCommands(b, { vault, log }),
+    ],
   });
 
   let polling = false;
@@ -175,6 +206,24 @@ export async function startApp(config: Config, log: Logger, overrides: AppOverri
     db: async () => (await pool.query("SELECT 1")).rowCount === 1,
     sandbox: () => sandbox.health(),
     telegram: () => polling,
+  }, (fastify) => {
+    if (!config.DASHBOARD_TOKEN) {
+      log.info("no DASHBOARD_TOKEN; dashboard disabled");
+      return;
+    }
+    registerDashboard(fastify, {
+      token: config.DASHBOARD_TOKEN,
+      staticDir: path.join(ROOT, "dist", "dashboard"),
+      pool,
+      orchestrator,
+      approvals,
+      scheduler,
+      memory,
+      budget,
+      settings,
+      startedAt,
+      redact,
+    });
   });
   await http.listen({ host: config.HTTP_HOST, port: config.HTTP_PORT });
   const address = http.server.address();
@@ -184,6 +233,7 @@ export async function startApp(config: Config, log: Logger, overrides: AppOverri
   await bot.api.setMyCommands(COMMANDS).catch((err: unknown) => log.warn({ err }, "could not set bot commands"));
   await orchestrator.start();
   await scheduler.start();
+  await health.start();
 
   const pollingDone = bot
     .start({
@@ -203,6 +253,7 @@ export async function startApp(config: Config, log: Logger, overrides: AppOverri
     runtime,
     scheduler,
     memory,
+    settings,
     httpPort,
     stop: async () => {
       log.info("shutting down");

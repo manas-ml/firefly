@@ -41,6 +41,7 @@ services:
 
   sandbox:
     <<: *hardening
+    image: firefly-sandbox:latest
     build:
       context: .
       dockerfile: docker/sandbox.Dockerfile
@@ -57,6 +58,7 @@ services:
 
   browser:
     <<: *hardening
+    image: firefly-browser:latest
     build:
       context: .
       dockerfile: docker/browser.Dockerfile
@@ -74,6 +76,7 @@ services:
 
   agent:
     <<: *hardening
+    image: firefly-agent:latest
     build:
       context: .
       dockerfile: docker/agent.Dockerfile
@@ -83,6 +86,7 @@ services:
       SANDBOX_URL: http://sandbox:7070
       BROWSER_URL: http://browser:7071
       VAULT_KEY_FILE: /run/secrets/vault_master_key
+      MAC_BRIDGE_TOKEN_FILE: /run/secrets/mac_bridge_token
       DATA_DIR: /data
       HTTP_HOST: 0.0.0.0
       HTTP_PORT: "8080"
@@ -93,6 +97,10 @@ services:
       - ./config/mcp.yaml:/app/config/mcp.yaml:ro
     secrets:
       - vault_master_key
+      - mac_bridge_token
+    # Lets the agent reach the optional Mac bridge (Docker Desktop/OrbStack provide this name already).
+    extra_hosts:
+      - host.docker.internal:host-gateway
     ports:
       - "127.0.0.1:${HEALTH_PORT:-8080}:8080"
     networks:
@@ -109,6 +117,39 @@ services:
         condition: service_healthy
     mem_limit: 1g
 
+  # Nightly pg_dump plus tarballs of the sessions, memory and workspace volumes,
+  # kept BACKUP_KEEP_DAYS days in BACKUP_DIR on the host (e.g. a folder synced to
+  # iCloud, or an external drive). The vault master key is NOT included.
+  backup:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/scripts/backup-loop.sh"]
+    environment:
+      PGHOST: postgres
+      PGUSER: firefly
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: firefly
+      BACKUP_TIME: ${BACKUP_TIME:-03:30}
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-14}
+      TZ: ${TZ:-America/Toronto}
+    volumes:
+      - ./scripts:/scripts:ro
+      - sessions:/volumes/sessions:ro
+      - memory:/volumes/memory:ro
+      - workspace:/volumes/workspace:ro
+      - ${BACKUP_DIR:-./backups}:/backups
+    networks:
+      - db_net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_OVERRIDE   # read files owned by the agent/sandbox users, write to the backup folder
+
 networks:
   sandbox_net:
     internal: true
@@ -123,6 +164,9 @@ networks:
 secrets:
   vault_master_key:
     file: ./secrets/vault_master_key
+  # Empty unless bridge/install.sh was run on the Mac.
+  mac_bridge_token:
+    file: ./secrets/mac_bridge_token
 
 volumes:
   pgdata:

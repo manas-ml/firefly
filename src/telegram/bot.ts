@@ -48,6 +48,9 @@ export const COMMANDS = [
   { command: "tasks", description: "Recent tasks" },
   { command: "raise", description: "Lift this month's budget cap" },
   { command: "vault", description: "Secrets: add <name> | list | rm <name>" },
+  { command: "pause", description: "Stop new tasks and routines" },
+  { command: "resume", description: "Resume after /pause" },
+  { command: "health", description: "Health report now" },
 ];
 
 const HELP = [
@@ -66,6 +69,8 @@ const HELP = [
   "/memory, /forget <topic> — what I remember (say “remember that …” to add)",
   "/usage, /tasks, /raise — spending and history",
   "/vault add <name> | list | rm — secrets the agent can use by name",
+  "/pause, /resume — stop or restart new tasks and routines",
+  "/health — uptime, spend, failures, disk",
 ].join("\n");
 
 function ago(date: Date | null | undefined): string {
