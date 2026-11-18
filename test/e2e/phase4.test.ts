@@ -144,6 +144,7 @@ describe("Phase 4: dashboard", () => {
       page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
       await page.goto(`${base}/?token=${DASH}`);
       expect(new URL(page.url()).search).toBe(""); // token gone from the address bar
+      await page.getByRole("button", { name: "Overview" }).click();
       await page.getByText("Running", { exact: true }).waitFor({ timeout: 10_000 });
       await page.getByRole("button", { name: "Tasks" }).click();
       await page.getByText("compute 41+1 in python").first().waitFor({ timeout: 10_000 });

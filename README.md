@@ -235,10 +235,29 @@ docker compose cp ./notes.txt sandbox:/workspace/
 docker compose cp sandbox:/workspace/report.md .
 ```
 
+### Chat on the Mac (dashboard)
+
+The dashboard opens on a **Chat** tab: a normal chat window for your agent, on the Mac, no
+Telegram needed. Type, press Enter, and watch what it's doing ("⏳ Running: ls -la"). It's
+the **same conversation as Telegram** (same session, memory, budget and rules): a message
+sent from either place is in the history of both, and messages queue in order.
+
+- Approvals appear **in the chat** with Approve / Deny buttons (for tasks started there,
+  they aren't also sent to Telegram).
+- **Stop** cancels the running task; **New chat** starts a fresh conversation (like `/new`).
+- Replies render Markdown (code blocks, bold, links). Agent output is shown as text and can
+  never inject HTML.
+- It needs the agent to be unpaused; the chat offers a Resume button.
+- Open it with `make dashboard` (prints the link), or **Open chat** in the menu bar app.
+  `http://127.0.0.1:8080/?token=…#chat` goes straight to it.
+
+It shows the finished answer and the current step rather than streaming word by word. Like
+the rest of the dashboard it's served on 127.0.0.1 only, behind the dashboard token.
+
 ### Dashboard and menu bar
 
 `make dashboard` prints `http://127.0.0.1:8080/?token=…`. Open it once and a cookie takes
-over. It shows tasks, the tool-call audit log, approvals (you can approve or deny there),
+over. Besides chat, it shows tasks, the tool-call audit log, approvals (you can approve or deny there),
 usage over the last 30 days, schedules (on/off), memory, and a global pause switch. It's
 served only on 127.0.0.1, and everything except `/health` needs the token.
 

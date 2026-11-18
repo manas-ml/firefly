@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { AgentRuntime } from "../agent/runtime.ts";
 import type { ApprovalService } from "../approvals/service.ts";
 import type { BudgetService } from "../budget/budget.ts";
 import type { Settings } from "../control/settings.ts";
@@ -20,9 +21,14 @@ export interface DashboardDeps {
   memory: MemoryStore;
   budget: BudgetService;
   settings: Settings;
+  runtime: AgentRuntime;
+  /** The owner's chat id: the web chat shares this conversation with Telegram. */
+  chatId: number;
   startedAt: Date;
   redact: (text: string) => string;
 }
+
+const MAX_CHAT_CHARS = 8000;
 
 const COOKIE = "ff_dash";
 
@@ -128,6 +134,57 @@ export function registerDashboard(app: FastifyInstance, d: DashboardDeps): void 
       if (typeof paused !== "boolean") return reply.code(400).send({ error: "paused must be true or false" });
       await d.settings.setPaused(paused);
       return json(reply, { paused });
+    });
+
+    // ---------- chat ----------
+
+    api.get("/api/chat", async (req, reply) => {
+      const limit = Math.min(Number((req.query as { limit?: string }).limit) || 60, 200);
+      const since = await d.pool.query<{ value: string }>("SELECT value #>> '{}' AS value FROM settings WHERE key = $1", [`chat_view_since:${d.chatId}`]);
+      const r = await d.pool.query(
+        `SELECT t.id, t.channel, t.prompt, t.result, t.status, t.error, t.created_at, t.finished_at,
+                COALESCE((SELECT json_agg(json_build_object('id', a.id, 'summary', a.summary, 'expires_at', a.expires_at) ORDER BY a.requested_at)
+                          FROM approvals a WHERE a.task_id = t.id AND a.status = 'pending'), '[]'::json) AS approvals
+         FROM tasks t
+         WHERE t.chat_id = $1 AND t.kind = 'chat' AND ($3::timestamptz IS NULL OR t.created_at >= $3::timestamptz)
+         ORDER BY t.created_at DESC LIMIT $2`,
+        [d.chatId, limit, since.rows[0]?.value ?? null],
+      );
+      const active = d.orchestrator.getActive(d.chatId);
+      return json(reply, {
+        paused: await d.settings.isPaused(),
+        active: active ? { taskId: active.taskId, step: active.step ?? null, waitingApproval: active.waitingApproval, startedAt: active.startedAt } : null,
+        messages: r.rows.reverse(),
+      });
+    });
+
+    api.post("/api/chat", async (req, reply) => {
+      const { text } = (req.body ?? {}) as { text?: unknown };
+      if (typeof text !== "string" || text.trim() === "") return reply.code(400).send({ error: "write a message first" });
+      if (text.length > MAX_CHAT_CHARS) return reply.code(400).send({ error: `messages are limited to ${MAX_CHAT_CHARS} characters` });
+      if (await d.settings.isPaused()) return reply.code(409).send({ error: "The agent is paused. Resume it first." });
+      const { task, ahead } = await d.orchestrator.enqueue(d.chatId, null, text.trim(), { channel: "web" });
+      return json(reply, { taskId: task.id, ahead });
+    });
+
+    api.post("/api/chat/stop", async (_req, reply) => {
+      const stopped = d.orchestrator.stop(d.chatId);
+      return json(reply, { stopped: Boolean(stopped) });
+    });
+
+    // Start a fresh conversation (same as /new): archives the session and clears the chat view.
+    api.post("/api/chat/new", async (_req, reply) => {
+      try {
+        await d.runtime.newSession(d.chatId);
+      } catch (err) {
+        return reply.code(409).send({ error: (err as Error).message });
+      }
+      await d.pool.query(
+        `INSERT INTO settings (key, value, updated_at) VALUES ($1, to_jsonb(now()::text), now())
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+        [`chat_view_since:${d.chatId}`],
+      );
+      return json(reply, { ok: true });
     });
 
     api.get("/api/tasks", async (req, reply) => {

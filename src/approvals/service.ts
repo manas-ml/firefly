@@ -34,6 +34,8 @@ export interface ApprovalRequest {
   /** Overrides the default timeout (routines wait longer). */
   timeoutSeconds?: number;
   attachments?: ApprovalAttachment[];
+  /** Where the task came from. Web tasks are approved in the dashboard, so no Telegram message is sent. */
+  channel?: "telegram" | "web";
   signal?: AbortSignal;
 }
 
@@ -71,6 +73,8 @@ export class ApprovalService {
 
     if (req.signal?.aborted) {
       await this.finish(approval.id, "cancelled");
+    } else if (req.channel === "web") {
+      // Shown in the dashboard chat (it reads pending approvals from the database).
     } else {
       try {
         const messageId = await this.notifier.sendApprovalRequest(approval, {

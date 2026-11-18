@@ -73,6 +73,7 @@ export interface RunInput {
   /** "chat" uses the chat's persistent session; "routine" a fresh session for this run only. */
   session: "chat" | "routine";
   trigger: RunTrigger;
+  channel: "telegram" | "web";
   approvalTimeoutSeconds: number;
   maxTurns: number;
 }
@@ -242,6 +243,7 @@ export class AgentRuntime {
     const run: RunContext = {
       taskId: input.taskId,
       chatId: input.chatId,
+      channel: input.channel,
       trigger: input.trigger,
       tainted: false,
       signal: input.signal,

@@ -67,6 +67,7 @@ async function runPrompt(chatId: number, prompt: string, signal = new AbortContr
     hooks,
     session: "chat",
     trigger: "user",
+    channel: "telegram",
     approvalTimeoutSeconds: 600,
     maxTurns: 40,
   });

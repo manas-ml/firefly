@@ -75,8 +75,9 @@ final class StatusModel: ObservableObject {
         }
     }
 
-    func openDashboard() {
-        guard let config, let url = URL(string: "\(config.url)/?token=\(config.token)") else { return }
+    /// Opens the dashboard in the default browser. `tab` is a dashboard tab id, e.g. "chat" or "approvals".
+    func openDashboard(tab: String? = nil) {
+        guard let config, let url = URL(string: "\(config.url)/?token=\(config.token)\(tab.map { "#\($0)" } ?? "")") else { return }
         NSWorkspace.shared.open(url)
     }
 
@@ -100,12 +101,15 @@ struct FireflyMenuApp: App {
                 Text(s.paused ? "Paused" : "Running")
                 Text("Up \(s.uptimeSeconds / 3600) h \((s.uptimeSeconds % 3600) / 60) min")
                 Button(s.pendingApprovals == 1 ? "1 pending approval" : "\(s.pendingApprovals) pending approvals") {
-                    model.openDashboard()
+                    model.openDashboard(tab: "approvals")
                 }
                 .disabled(s.pendingApprovals == 0)
                 Divider()
                 Button(s.paused ? "Resume agent" : "Pause agent") { model.setPaused(!s.paused) }
             }
+            Button("Open chat") { model.openDashboard(tab: "chat") }
+                .keyboardShortcut("c")
+                .disabled(model.config == nil)
             Button("Open dashboard") { model.openDashboard() }
                 .disabled(model.config == nil)
             Divider()

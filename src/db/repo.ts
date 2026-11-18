@@ -24,6 +24,8 @@ export interface TaskRow {
   error: string | null;
   kind: "chat" | "routine";
   schedule_id: string | null;
+  channel: "telegram" | "web";
+  result: string | null;
 }
 
 export interface ApprovalRow {
@@ -80,14 +82,19 @@ export class Repo {
     chatId: number,
     messageId: number | null,
     prompt: string,
-    opts: { kind?: "chat" | "routine"; scheduleId?: string } = {},
+    opts: { kind?: "chat" | "routine"; scheduleId?: string; channel?: "telegram" | "web" } = {},
   ): Promise<TaskRow> {
     await this.ensureChat(chatId);
     const r = await this.pool.query<TaskRow>(
-      "INSERT INTO tasks (chat_id, message_id, prompt, kind, schedule_id) VALUES ($1, $2, $3, $4, $5) RETURNING *",
-      [chatId, messageId, prompt, opts.kind ?? "chat", opts.scheduleId ?? null],
+      "INSERT INTO tasks (chat_id, message_id, prompt, kind, schedule_id, channel) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *",
+      [chatId, messageId, prompt, opts.kind ?? "chat", opts.scheduleId ?? null, opts.channel ?? "telegram"],
     );
     return r.rows[0]!;
+  }
+
+  /** The text the owner saw for a task: the reply, or the notice that ended it. */
+  async setTaskResult(id: string, text: string): Promise<void> {
+    await this.pool.query("UPDATE tasks SET result = $2 WHERE id = $1", [id, text.slice(0, 100_000)]);
   }
 
   async listRecentTasks(chatId: number, limit = 10): Promise<(TaskRow & { cost: number; schedule_name: string | null })[]> {

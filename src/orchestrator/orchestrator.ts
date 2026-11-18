@@ -40,6 +40,9 @@ export interface ActiveRun {
   startedAt: Date;
   controller: AbortController;
   waitingApproval: boolean;
+  channel: "telegram" | "web";
+  /** What the agent is doing right now (the last tool it started), for the chat UI. */
+  step?: string;
 }
 
 export interface OrchestratorOptions {
@@ -113,9 +116,9 @@ export class Orchestrator {
     const interrupted = await this.repo.failInterruptedTasks();
     for (const task of interrupted) {
       this.log.warn({ taskId: task.id, chatId: task.chat_id }, "task interrupted by restart");
-      await this.notifier
-        .sendNotice(task.chat_id, interruptedNotice(task.prompt))
-        .catch((err: unknown) => this.log.warn({ err }, "could not notify about interrupted task"));
+      await this.say(task, "notice", interruptedNotice(task.prompt)).catch((err: unknown) =>
+        this.log.warn({ err }, "could not notify about interrupted task"),
+      );
     }
     for (const approval of await this.repo.expireAllPendingApprovals()) {
       await this.notifier.showApprovalOutcome(approval, "expired").catch(() => undefined);
@@ -130,9 +133,14 @@ export class Orchestrator {
     }
   }
 
-  async enqueue(chatId: number, messageId: number | null, prompt: string): Promise<{ task: TaskRow; ahead: number }> {
+  async enqueue(
+    chatId: number,
+    messageId: number | null,
+    prompt: string,
+    opts: { channel?: "telegram" | "web" } = {},
+  ): Promise<{ task: TaskRow; ahead: number }> {
     const ahead = (await this.repo.countQueued(chatId)) + (this.active.has(`chat:${chatId}`) ? 1 : 0);
-    const task = await this.repo.createTask(chatId, messageId, prompt);
+    const task = await this.repo.createTask(chatId, messageId, prompt, { channel: opts.channel });
     await this.boss.send(RUN_QUEUE, { taskId: task.id, chatId, kind: "chat" } satisfies RunJobData, { singletonKey: `chat:${chatId}` });
     return { task, ahead };
   }
@@ -183,7 +191,7 @@ export class Orchestrator {
       if (!task || task.status !== "queued") return;
       if (await this.options.isPaused?.()) {
         await this.repo.setTaskStatus(taskId, "cancelled", "paused");
-        if (kind === "chat") await this.notifier.sendNotice(chatId, "⏸ The agent is paused, so I didn't start that. Send /resume first.");
+        if (kind === "chat") await this.say(task, "notice", "⏸ The agent is paused, so I didn't start that. Send /resume first.");
         return;
       }
       const run: ActiveRun = {
@@ -195,10 +203,12 @@ export class Orchestrator {
         startedAt: new Date(),
         controller,
         waitingApproval: false,
+        channel: task.channel,
       };
       this.active.set(key, run);
       await this.repo.setTaskStatus(taskId, "running");
-      progress = kind === "chat" ? this.notifier.startProgress(chatId) : silentProgress();
+      const telegram = task.channel === "telegram";
+      progress = kind === "chat" && telegram ? this.notifier.startProgress(chatId) : silentProgress();
       const p = progress;
 
       const result = await this.runtime.run({
@@ -208,17 +218,21 @@ export class Orchestrator {
         signal: controller.signal,
         session: kind,
         trigger: kind === "routine" ? "routine" : "user",
+        channel: task.channel,
         approvalTimeoutSeconds: kind === "routine" ? this.options.routineApprovalTimeoutSeconds : this.options.approvalTimeoutSeconds,
         maxTurns: this.options.maxTurnsPerTask,
         hooks: {
-          onToolStart: (description) => p.step(description),
+          onToolStart: (description) => {
+            run.step = description;
+            p.step(description);
+          },
           onWaitingApproval: async (waiting) => {
             run.waitingApproval = waiting;
             p.waitingApproval(waiting);
             await this.repo.setTaskStatus(taskId, waiting ? "waiting_approval" : "running");
           },
-          sendImage: this.notifier.sendPhoto ? (image, caption) => this.notifier.sendPhoto!(chatId, image, caption) : undefined,
-          beforeModelCall: this.budget ? () => this.checkBudget(taskId, chatId) : undefined,
+          sendImage: telegram && this.notifier.sendPhoto ? (image, caption) => this.notifier.sendPhoto!(chatId, image, caption) : undefined,
+          beforeModelCall: this.budget ? () => this.checkBudget(task, taskId) : undefined,
         },
       });
       await p.done();
@@ -227,9 +241,12 @@ export class Orchestrator {
     } catch (err) {
       this.log.error({ err, taskId }, "task failed");
       await this.repo.setTaskStatus(taskId, "failed", (err as Error).message).catch(() => undefined);
-      await this.notifier
-        .sendNotice(chatId, `${label ? `${label}: ` : ""}⚠️ Something went wrong: ${excerpt((err as Error).message, 300)}`)
-        .catch(() => undefined);
+      const failed = await this.repo.getTask(taskId).catch(() => undefined);
+      if (failed) {
+        await this.say(failed, "notice", `${label ? `${label}: ` : ""}⚠️ Something went wrong: ${excerpt((err as Error).message, 300)}`).catch(
+          () => undefined,
+        );
+      }
     } finally {
       jobSignal.removeEventListener("abort", onJobAbort);
       if (progress) await progress.done().catch(() => undefined);
@@ -238,20 +255,19 @@ export class Orchestrator {
   }
 
   private async finish(task: TaskRow, kind: "chat" | "routine", label: string | undefined, result: RunResult): Promise<void> {
-    const chatId = task.chat_id;
     const prefix = label ? `${label}: ` : "";
     if (result.aborted && this.shuttingDown) {
       await this.repo.setTaskStatus(task.id, "failed", "interrupted");
-      await this.notifier.sendNotice(chatId, interruptedNotice(task.prompt));
+      await this.say(task, "notice", interruptedNotice(task.prompt));
     } else if (result.aborted && result.stopReason === "limit") {
       await this.repo.setTaskStatus(task.id, "failed", result.stopMessage ?? "limit");
-      await this.notifier.sendNotice(chatId, `${prefix}🛑 ${result.stopMessage ?? "Stopped by a limit."}`);
+      await this.say(task, "notice", `${prefix}🛑 ${result.stopMessage ?? "Stopped by a limit."}`);
     } else if (result.aborted) {
       await this.repo.setTaskStatus(task.id, "cancelled");
-      await this.notifier.sendNotice(chatId, `${prefix}⏹ Stopped.`);
+      await this.say(task, "notice", `${prefix}⏹ Stopped.`);
     } else if (result.error) {
       await this.repo.setTaskStatus(task.id, "failed", result.error);
-      await this.notifier.sendNotice(chatId, `${prefix}⚠️ Something went wrong: ${excerpt(result.error, 300)}`);
+      await this.say(task, "notice", `${prefix}⚠️ Something went wrong: ${excerpt(result.error, 300)}`);
     } else {
       await this.repo.setTaskStatus(task.id, "done");
       if (kind === "routine") {
@@ -259,17 +275,30 @@ export class Orchestrator {
           this.log.info({ taskId: task.id }, "routine had nothing to report");
           return;
         }
-        await this.notifier.sendReply(chatId, `**${label}**\n\n${result.text}`);
+        await this.say(task, "reply", `**${label}**\n\n${result.text}`);
       } else {
-        await this.notifier.sendReply(chatId, result.text || "(no reply)", task.message_id ?? undefined);
+        await this.say(task, "reply", result.text || "(no reply)");
       }
     }
   }
 
-  private async checkBudget(taskId: string, chatId: number): Promise<string | undefined> {
+  /**
+   * Deliver the end of a task: always stored with the task (the dashboard chat
+   * shows it), and sent to Telegram when the task came from Telegram or is a routine.
+   */
+  private async say(task: Pick<TaskRow, "id" | "chat_id" | "channel" | "kind" | "message_id">, how: "reply" | "notice", text: string): Promise<void> {
+    await this.repo.setTaskResult(task.id, text).catch((err: unknown) => this.log.warn({ err }, "could not store task result"));
+    // Routines have no web chat to answer into, so they always go to Telegram.
+    if (task.channel === "web" && task.kind === "chat") return;
+    if (how === "reply") await this.notifier.sendReply(task.chat_id, text, task.message_id ?? undefined);
+    else await this.notifier.sendNotice(task.chat_id, text);
+  }
+
+  private async checkBudget(task: Pick<TaskRow, "chat_id" | "channel">, taskId: string): Promise<string | undefined> {
     if (!this.budget) return undefined;
     const r = await this.budget.check(taskId);
-    for (const w of r.warnings) await this.notifier.sendNotice(chatId, w).catch(() => undefined);
+    // Web tasks have no Telegram thread; the 80% warning is shown once in the next Telegram reply or /usage.
+    if (task.channel === "telegram") for (const w of r.warnings) await this.notifier.sendNotice(task.chat_id, w).catch(() => undefined);
     return r.ok ? undefined : r.reason;
   }
 }

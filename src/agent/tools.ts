@@ -20,6 +20,8 @@ export type RunTrigger = "user" | "routine";
 export interface RunContext {
   taskId: string;
   chatId: number;
+  /** Where the owner is talking to the agent: Telegram, or the dashboard chat. */
+  channel: "telegram" | "web";
   /** What started this run: a direct message from the owner, or a scheduled routine. */
   trigger: RunTrigger;
   /** Set once the task has read untrusted content (files, command output, web pages, email). */
@@ -209,6 +211,7 @@ export function guardTool(tool: AgentTool, deps: ToolDeps): AnyTool {
           policyReason: policy.reason,
           timeoutSeconds: run.approvalTimeoutSeconds,
           attachments,
+          channel: run.channel,
           signal: run.signal,
         });
         await run.onWaitingApproval(false);

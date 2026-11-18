@@ -1,7 +1,8 @@
 # Firefly menu bar app (optional)
 
 A status dot in the macOS menu bar: green running, orange paused, red unreachable.
-It shows pending approvals, pauses and resumes the agent, and opens the dashboard.
+It shows pending approvals, pauses and resumes the agent, and opens the dashboard or the
+chat (**Open chat**, ⌘C in the menu) in your browser.
 
 ```sh
 make menubar-config                         # in the Firefly folder: writes the URL + token

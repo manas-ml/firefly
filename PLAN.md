@@ -432,3 +432,37 @@ volumes, and creating a routine for a chat that had never sent a message failed.
 Not verifiable here: macOS itself (launchd, the `shortcuts` CLI, `host.docker.internal` on
 Docker Desktop/OrbStack, the SwiftUI app), iCloud-synced backup folders, and a real
 `git pull` update from the remote.
+
+---
+
+# Addendum: web chat on the Mac
+
+A chat window in the dashboard (first tab), so the Mac mini can be used without Telegram.
+
+- **Same conversation as Telegram.** The web chat uses the owner's chat id (the first
+  `TELEGRAM_ALLOWED_USER_IDS` entry), so it shares the Pi session, memory, budget, and the
+  per-chat FIFO queue. Telegram tasks show in the web history, marked "via Telegram".
+- **Channels.** Migration `004` adds `tasks.channel` (`telegram` | `web`) and `tasks.result`.
+  Every finished task now stores the text the owner saw. For web tasks the orchestrator
+  skips Telegram's status message, reply and notices (`say()`), and only stores the result.
+  Routines still go to Telegram.
+- **Approvals.** Web-channel tasks raise approvals without a Telegram message (`channel` is
+  carried on the run context); they show in the chat with Approve/Deny, resolved through
+  the existing approvals endpoint, and expire like any other.
+- **API** (dashboard token + `x-firefly` header, like the rest): `GET /api/chat` (history,
+  active step, pending approvals, paused), `POST /api/chat`, `POST /api/chat/stop`,
+  `POST /api/chat/new` (archives the session; a `settings` key hides older messages from
+  the view). Sends are refused while paused; messages are capped at 8000 characters.
+- **UI.** Polling (1 s while busy, 4 s idle), not streaming. Markdown is parsed to data
+  (`dashboard/src/markdown.ts`) and rendered as React elements, never as HTML.
+- **Menu bar app.** "Open chat" (⌘C) opens `/?token=…#chat`; the pending-approvals item opens
+  `#approvals`. Still not compiled here (no Swift toolchain).
+- **Not done:** token-by-token streaming; screenshots from `browser_screenshot` aren't shown
+  in the web chat (they go to Telegram only for Telegram tasks); a native window (the menu
+  bar app opens the browser).
+
+Tested (`test/e2e/phase5.test.ts`, `test/markdown.test.ts`): replies without touching
+Telegram; shared history and memory with Telegram; live step display; approve in chat;
+expiry; Stop within 5 s; paused refusal; New chat; and, in real Chromium, typing, Enter to
+send, rendered code block and link, HTML-in-output stays inert, approval in the chat, and
+the `#chat` deep link.

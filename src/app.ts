@@ -221,6 +221,8 @@ export async function startApp(config: Config, log: Logger, overrides: AppOverri
       memory,
       budget,
       settings,
+      runtime,
+      chatId: config.TELEGRAM_ALLOWED_USER_IDS[0]!,
       startedAt,
       redact,
     });
