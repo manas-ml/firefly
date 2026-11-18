@@ -41,7 +41,11 @@ export function lastToolResult(ctx: { messages: unknown[] }): string {
 
 export async function createHarness(
   env: Record<string, string> = {},
-  overrides: Omit<AppOverrides, "models"> & { policy?: (yaml: string, workspace: string) => string } = {},
+  overrides: Omit<AppOverrides, "models"> & {
+    policy?: (yaml: string, workspace: string) => string;
+    /** Runs before the first boot; returns extra env (e.g. BROWSER_URL, VAULT_KEY_FILE). */
+    setup?: (dataDir: string) => Promise<Record<string, string>>;
+  } = {},
 ): Promise<Harness> {
   const tg = new FakeTelegram();
   await tg.start();
@@ -55,6 +59,8 @@ export async function createHarness(
   if (overrides.policy) policy = overrides.policy(policy, sb.workspace);
   await writeFile(policyFile, policy);
   const logs: Record<string, unknown>[] = [];
+  const setupEnv = overrides.setup ? await overrides.setup(dataDir) : {};
+  const { setup: _setup, policy: _policy, ...appOverrides } = overrides;
 
   const boot = async (extra: Record<string, string> = {}) => {
     const config = loadConfig({
@@ -74,6 +80,7 @@ export async function createHarness(
       MEMORY_DIR: memoryDir,
       POLICY_FILE: policyFile,
       LOG_LEVEL: "info",
+      ...setupEnv,
       ...env,
       ...extra,
     });
@@ -86,7 +93,7 @@ export async function createHarness(
     return startApp(config, createLogger("info", sink), {
       models: faux,
       ui: { editIntervalMs: 200, typingIntervalMs: 500 },
-      ...overrides,
+      ...appOverrides,
     });
   };
 

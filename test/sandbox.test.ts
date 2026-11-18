@@ -86,3 +86,16 @@ describe("sandbox server", () => {
     expect((await client.read("inner-link/f.txt")).toString()).toBe("ok");
   });
 });
+
+describe("sandbox per-command env", () => {
+  it("passes extra variables to one command only", async () => {
+    const r = await client.exec({ command: 'echo "v=$MY_TOKEN"', timeoutSec: 5, env: { MY_TOKEN: "abc123" } });
+    expect(r.stdout.trim()).toBe("v=abc123");
+    const again = await client.exec({ command: 'echo "v=$MY_TOKEN"', timeoutSec: 5 });
+    expect(again.stdout.trim()).toBe("v=");
+  });
+  it("refuses to override PATH or the dynamic loader", async () => {
+    await expect(client.exec({ command: "true", timeoutSec: 5, env: { PATH: "/tmp" } })).rejects.toMatchObject({ status: 400 });
+    await expect(client.exec({ command: "true", timeoutSec: 5, env: { LD_PRELOAD: "/tmp/x.so" } })).rejects.toMatchObject({ status: 400 });
+  });
+});

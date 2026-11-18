@@ -47,6 +47,7 @@ export const COMMANDS = [
   { command: "usage", description: "Spending today and this month" },
   { command: "tasks", description: "Recent tasks" },
   { command: "raise", description: "Lift this month's budget cap" },
+  { command: "vault", description: "Secrets: add <name> | list | rm <name>" },
 ];
 
 const HELP = [
@@ -64,6 +65,7 @@ const HELP = [
   "/schedules, /run <name> — routines",
   "/memory, /forget <topic> — what I remember (say “remember that …” to add)",
   "/usage, /tasks, /raise — spending and history",
+  "/vault add <name> | list | rm — secrets the agent can use by name",
 ].join("\n");
 
 function ago(date: Date | null | undefined): string {

@@ -97,6 +97,43 @@ every conversation; other topics are looked up when needed. Memory is only writt
 your own messages: the agent can't save anything during a routine, or after it has read a
 file, command output, web page or email in the same task.
 
+### Browser
+
+A Chromium container with its own persistent profile does the web browsing (the sandbox
+still has no internet). The agent reads pages as an accessibility tree, clicks and types by
+element reference, and can send you screenshots. Opening and reading pages runs without
+asking; clicking a submit button or anything labelled buy, send, post, reply, delete, sign
+in and so on asks first, with a screenshot of the page attached. Domain allow- and
+blocklists are in `policy.yaml` (`browser:`); the browser never loads private or loopback
+addresses, so a web page can't reach the agent, the database or your LAN.
+
+### Vault
+
+```
+/vault add github     → then send the token as the next message; the bot deletes it
+/vault list
+/vault rm github
+```
+
+Secrets are encrypted with libsodium (secretbox) in Postgres. The master key is
+`secrets/vault_master_key`, created by `make up` (or `make secrets`) and mounted as a
+Docker secret. It's never in `.env` and never in the sandbox or browser. **Back that file up
+separately**: without it, the vault can't be decrypted. The agent refers to secrets by name
+(*"log in with vault:github"*) and uses `vault_fill`, which types the value into a browser
+field or passes it as an environment variable to one sandbox command. It always asks first.
+Any secret value that shows up in tool output is replaced with `[vault:name]` before it
+reaches the model, the logs, the session files or Telegram.
+
+### Connected apps (MCP and Composio)
+
+Servers are listed in [`config/mcp.yaml`](config/mcp.yaml); nothing else is loaded. Tag each
+tool `read` (runs without asking) or `write` (asks); untagged tools ask. For Gmail, Calendar
+and Notion, create a Composio MCP server, add its URL to `mcp.yaml`, and store the API key
+with `/vault add composio` (headers can say `vault:composio`). Then `make restart`.
+
+**Taint rule:** once a task has read a web page, an email, a document or command output,
+every write in that task asks, including file writes that are normally allowed.
+
 ### Spending limits
 
 `MONTHLY_BUDGET_USD` and `TASK_BUDGET_USD` are checked before every model call. You get a
@@ -117,6 +154,8 @@ edit it and run `make restart`). Defaults:
 - **Taint rule:** once a task has read files, command output, web pages or email, writes
   and edits ask too, even inside `/workspace`.
 - **Routines:** creating or deleting one always asks.
+- **Browser:** reading is allowed; submit, buy, send, post and similar ask, with a screenshot.
+- **Apps:** MCP tools tagged `write`, or untagged, ask. `vault_fill` always asks.
 - **Always refused:** writes outside `/workspace`, `rm -rf /`-style commands, fork bombs,
   reading `/proc/*/environ`, reaching the database or agent containers.
 
@@ -149,9 +188,10 @@ docker compose cp sandbox:/workspace/report.md .
 - Nothing listens for inbound internet traffic. The bot uses long polling; the only
   published port is the health check on `127.0.0.1`.
 - Updates from anyone but your user id, and all group chats, are dropped (and logged).
-- Three internal networks: the sandbox can reach only the agent (whose HTTP server serves
-  `/health` and nothing else); only the agent can reach Postgres; only the agent can reach
-  the internet, unless you set `SANDBOX_INTERNET=true`.
+- Internal networks: the sandbox can reach only the agent (whose HTTP server serves
+  `/health` and nothing else); only the agent can reach Postgres; the browser has its own
+  internet access and refuses private addresses; the sandbox has none unless you set
+  `SANDBOX_INTERNET=true`.
 - API keys and the Telegram token live only in the agent container. The sandbox gets only
   its own access token, and commands run with a clean environment.
 - The Docker socket is never mounted. All custom images run as non-root users, with all

@@ -8,10 +8,16 @@ COMPOSE_FILES += -f docker-compose.internet.yml
 endif
 COMPOSE := docker compose $(COMPOSE_FILES)
 
-.PHONY: up down logs migrate test test-e2e ps restart build check-env
+.PHONY: up down logs migrate test test-e2e ps restart build check-env secrets
 
-check-env:
+check-env: secrets
 	@test -f .env || (echo "Missing .env: cp .env.example .env and fill it in" && exit 1)
+
+# The vault master key is generated once and kept out of .env. Back it up
+# separately: without it, the secrets in the database can't be decrypted.
+secrets:
+	@mkdir -p secrets && chmod 700 secrets
+	@test -s secrets/vault_master_key || (umask 077 && openssl rand -hex 32 > secrets/vault_master_key && echo "Generated secrets/vault_master_key (back it up somewhere safe)")
 
 up: check-env
 	@echo "Sandbox internet access: $(if $(filter true,$(SANDBOX_INTERNET)),ON,off)"

@@ -26,12 +26,35 @@ tools:
   # Memory: the remember tool itself refuses anything not from the owner's own message.
   remember: allow
   recall: allow
+  # Browser: navigating and reading are allowed; submitting forms, buying,
+  # posting and sending ask (see browser: below), with a screenshot attached.
+  browser_open: allow
+  browser_snapshot: allow
+  browser_screenshot: allow
+  browser_click: allow
+  browser_type: allow
+  browser_close: allow
+  # Using a vault secret always asks.
+  vault_fill: ask
+  # MCP tools are tagged read (allow) or write (ask) in config/mcp.yaml.
   default: ask       # any tool not listed here
 
 # Taint rule: once a task has read untrusted content (files, command output,
 # web pages, email), these tools ask even when they'd normally be allowed.
 taint:
-  write_tools: [write, edit]
+  write_tools: [write, edit, browser_type]
+
+browser:
+  # Empty allowlist = any public site. The blocklist always wins.
+  allowed_domains: []
+  blocked_domains: []
+  # Never let a web page reach private addresses (the agent, the database, your LAN, the Mac).
+  block_private_networks: true
+  # Clicking a form's submit button, or anything whose label contains one of
+  # these words, asks first.
+  risky_words: [buy, purchase, order, pay, checkout, send, post, publish, submit, delete, remove,
+    confirm, subscribe, sign up, register, transfer, book, reserve, reply, share, donate, tweet,
+    comment, upload, sign in, log in, login, unsubscribe]
 
 bash:
   # Programs that only read. A command made only of these runs without asking,

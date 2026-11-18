@@ -51,11 +51,13 @@ export class TelegramUi implements TaskNotifier, ApprovalNotifier {
     private readonly api: Api,
     private readonly log: Logger,
     private readonly opts: { editIntervalMs: number; typingIntervalMs: number } = { editIntervalMs: 2000, typingIntervalMs: 4000 },
+    /** Strips vault secret values from everything sent to Telegram. */
+    private readonly redact: (text: string) => string = (t) => t,
   ) {}
 
   /** Send Markdown as HTML, falling back to plain text if Telegram rejects the formatting. */
   async sendMarkdown(chatId: number, markdown: string, replyTo?: number): Promise<void> {
-    const chunks = chunkMessage(markdown);
+    const chunks = chunkMessage(this.redact(markdown));
     for (const [i, chunk] of chunks.entries()) {
       const reply = i === 0 && replyTo ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {};
       try {
@@ -73,7 +75,7 @@ export class TelegramUi implements TaskNotifier, ApprovalNotifier {
   }
 
   async sendNotice(chatId: number, text: string): Promise<void> {
-    await this.api.sendMessage(chatId, text);
+    await this.api.sendMessage(chatId, this.redact(text));
   }
 
   startProgress(chatId: number): ProgressHandle {

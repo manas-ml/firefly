@@ -22,6 +22,13 @@ import { MemoryStore } from "./memory/store.ts";
 import { createMemoryTools } from "./memory/tools.ts";
 import { SchedulerService } from "./scheduler/service.ts";
 import { createScheduleTools } from "./scheduler/tools.ts";
+import { BrowserClient } from "./browser/client.ts";
+import { createBrowserTools, createVaultTool } from "./browser/tools.ts";
+import { loadMcpConfig } from "./mcp/config.ts";
+import { McpManager } from "./mcp/manager.ts";
+import { registerVaultCommands } from "./telegram/commands/vault.ts";
+import { Vault } from "./vault/vault.ts";
+import { setLogRedactor } from "./logger.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -55,7 +62,8 @@ async function waitFor(check: () => Promise<boolean>, what: string, log: Logger,
 }
 
 export async function startApp(config: Config, log: Logger, overrides: AppOverrides = {}): Promise<App> {
-  const rules = loadPolicyRules(path.isAbsolute(config.POLICY_FILE) ? config.POLICY_FILE : path.join(ROOT, config.POLICY_FILE));
+  const fromRoot = (p: string) => (path.isAbsolute(p) ? p : path.join(ROOT, p));
+  const rules = loadPolicyRules(fromRoot(config.POLICY_FILE));
   log.info({ workspace: rules.workspace }, "policy loaded");
 
   const pool = createPool(config.DATABASE_URL);
@@ -66,6 +74,21 @@ export async function startApp(config: Config, log: Logger, overrides: AppOverri
   const sandbox = new SandboxClient(config.SANDBOX_URL, config.SANDBOX_TOKEN);
   await waitFor(() => sandbox.health(), "sandbox", log);
 
+  const vault = new Vault(pool);
+  if (await vault.init(config.VAULT_KEY_FILE)) log.info("vault unlocked");
+  else log.warn({ file: config.VAULT_KEY_FILE }, "no vault master key; the vault is disabled");
+  const redact = (text: string) => vault.redact(text);
+  setLogRedactor(redact);
+
+  const browser = config.BROWSER_URL && config.BROWSER_TOKEN ? new BrowserClient(config.BROWSER_URL, config.BROWSER_TOKEN, rules) : undefined;
+  if (browser) await waitFor(() => browser.health(), "browser", log);
+  else log.info("no BROWSER_URL; browser tools disabled");
+
+  const resolveSecret = (v: string) => (v.startsWith("vault:") ? vault.reveal(v) : v);
+  const mcp = new McpManager(loadMcpConfig(fromRoot(config.MCP_CONFIG)), log, resolveSecret);
+  await mcp.connect();
+  mcp.applyPolicy(rules);
+
   const models = overrides.models ?? (await createOpenRouterRuntime(config.DATA_DIR, config.OPENROUTER_API_KEY));
   if (!models.resolveModel(config.MODEL)) throw new Error(`MODEL ${config.MODEL} is not a known OpenRouter model`);
 
@@ -74,7 +97,7 @@ export async function startApp(config: Config, log: Logger, overrides: AppOverri
   await boss.start();
 
   const bot = new Bot(config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_API_ROOT ? { client: { apiRoot: config.TELEGRAM_API_ROOT } } : {});
-  const ui = new TelegramUi(bot.api, log, overrides.ui);
+  const ui = new TelegramUi(bot.api, log, overrides.ui, redact);
   const approvals = new ApprovalService(repo, ui, config.APPROVAL_TIMEOUT_SECONDS, log);
   const memory = new MemoryStore(config.MEMORY_DIR, pool);
   await memory.init();
@@ -95,7 +118,15 @@ export async function startApp(config: Config, log: Logger, overrides: AppOverri
     maxOutputChars: config.MAX_TOOL_OUTPUT_CHARS,
     systemPrompt: await loadSystemPrompt(),
     modelMaxRetries: config.MODEL_MAX_RETRIES,
-    toolFactories: [(getRun) => createMemoryTools(memory, getRun), (getRun) => createScheduleTools(scheduler, getRun)],
+    redact,
+    toolFactories: [
+      (getRun) => createMemoryTools(memory, getRun),
+      (getRun) => createScheduleTools(scheduler, getRun),
+      (getRun) => (browser ? createBrowserTools(browser, getRun) : []),
+      (getRun) =>
+        vault.enabled ? [createVaultTool(vault, { browser, sandbox, toolTimeoutSeconds: config.TOOL_TIMEOUT_SECONDS, workspace: rules.workspace }, getRun)] : [],
+      () => mcp.tools(),
+    ],
     getPromptAddendum: async () => {
       const profile = await memory.profileForPrompt();
       return profile
@@ -136,6 +167,7 @@ export async function startApp(config: Config, log: Logger, overrides: AppOverri
     scheduler,
     memory,
     budget,
+    extraHandlers: [(b) => registerVaultCommands(b, { vault, log })],
   });
 
   let polling = false;
@@ -180,6 +212,7 @@ export async function startApp(config: Config, log: Logger, overrides: AppOverri
       await orchestrator.stopAll();
       await boss.stop({ graceful: true, timeout: 10_000 }).catch(() => undefined);
       runtime.dispose();
+      await mcp.close();
       await http.close();
       await pool.end();
     },

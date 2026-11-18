@@ -1,5 +1,6 @@
 import path from "node:path";
 import { classifyBash } from "./bash.ts";
+import { classifyClick, classifyUrl, type ElementInfo } from "./browser.ts";
 import type { PolicyRules } from "./rules.ts";
 import type { PolicyResult, ToolCall } from "./types.ts";
 
@@ -60,6 +61,16 @@ function classifyBase(call: ToolCall, rules: PolicyRules): PolicyResult {
       }
       const decision = configured ?? "allow";
       return { decision, reason: decision === "allow" ? `${call.tool} inside the workspace` : `${call.tool} needs approval` };
+    }
+    case "browser_open":
+      return configured === "ask" || configured === "deny" ? { decision: configured, reason: "browser_open" } : classifyUrl(call.args.url, rules);
+    case "browser_click":
+      if (configured === "ask" || configured === "deny") return { decision: configured, reason: "browser_click" };
+      return classifyClick(call.context?.element as ElementInfo | undefined, rules, call.context?.preflightError);
+    case "browser_type": {
+      if (configured === "ask" || configured === "deny") return { decision: configured, reason: "browser_type" };
+      if (call.args.submit === true) return { decision: "ask", reason: "types and submits a form" };
+      return { decision: "allow", reason: "types into a field" };
     }
     default: {
       const decision = configured ?? rules.tools.default ?? "ask";

@@ -66,6 +66,11 @@ const schema = z.object({
   // Routine approvals wait for you; pg-boss caps a job at 24 h, so keep this under 23 h.
   ROUTINE_APPROVAL_TIMEOUT_SECONDS: intFromEnv(43200).refine((n) => n <= 82800, "must be at most 82800 (23 hours)"),
   MODEL_MAX_RETRIES: intFromEnv(4, 0),
+  // Phase 3: browser, vault, MCP
+  BROWSER_URL: z.string().url().optional(),
+  BROWSER_TOKEN: z.string().min(24, "use at least 24 random characters").optional(),
+  VAULT_KEY_FILE: z.string().default("/run/secrets/vault_master_key"),
+  MCP_CONFIG: z.string().default("config/mcp.yaml"),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
   TZ: z.string().default("America/Toronto"),
   // Not in the user-facing .env; defaults suit the Docker setup.

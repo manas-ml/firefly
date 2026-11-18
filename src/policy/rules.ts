@@ -17,6 +17,14 @@ const rulesSchema = z.object({
       write_tools: z.array(z.string()).default([]),
     })
     .default({ write_tools: [] }),
+  browser: z
+    .object({
+      allowed_domains: z.array(z.string()).default([]),
+      blocked_domains: z.array(z.string()).default([]),
+      block_private_networks: z.boolean().default(true),
+      risky_words: z.array(z.string()).default([]),
+    })
+    .default({ allowed_domains: [], blocked_domains: [], block_private_networks: true, risky_words: [] }),
   bash: z.object({
     read_only_commands: z.array(z.string()).default([]),
     non_path_commands: z.array(z.string()).default([]),

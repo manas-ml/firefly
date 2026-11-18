@@ -136,10 +136,11 @@ async function exec(body: Record<string, unknown>) {
   if (running.has(execId)) throw new HttpError(409, "execId already running");
   const cwd = await safePath(typeof body.cwd === "string" ? body.cwd : WORKSPACE);
   const timeoutSec = Math.min(Math.max(Number(body.timeoutSec) || 120, 1), MAX_TIMEOUT_SEC);
+  const extraEnv = commandEnv(body.env);
 
   const child = spawn("bash", ["-lc", command], {
     cwd,
-    env: COMMAND_ENV,
+    env: { ...COMMAND_ENV, ...extraEnv },
     detached: true, // own process group, so the whole tree can be killed
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -189,6 +190,21 @@ async function exec(body: Record<string, unknown>) {
     timedOut,
     cancelled: entry.cancelled,
   };
+}
+
+/** Extra variables for one command (a vault secret). Can't override the basics or the loader. */
+function commandEnv(input: unknown): Record<string, string> {
+  if (input === undefined) return {};
+  if (typeof input !== "object" || input === null || Array.isArray(input)) throw new HttpError(400, "env must be an object");
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
+    if (!/^[A-Z_][A-Z0-9_]{0,63}$/.test(k) || k in COMMAND_ENV || k.startsWith("LD_") || k === "BASH_ENV" || k === "ENV") {
+      throw new HttpError(400, `env name not allowed: ${k}`);
+    }
+    if (typeof v !== "string" || v.length > 8192) throw new HttpError(400, `env value for ${k} must be a string`);
+    out[k] = v;
+  }
+  return out;
 }
 
 function signalNumber(signal: NodeJS.Signals): number | undefined {

@@ -1,0 +1,38 @@
+# MCP servers the agent may use. Only servers listed here are loaded; nothing is
+# installed from a marketplace. Review a server before adding it.
+#
+# Each tool is tagged `read` (runs without asking, and taints the task: after it,
+# writes need approval) or `write` (always asks). Tools not listed use the
+# server's `default`, which should stay `ask`.
+#
+# Header and env values of the form vault:<name> are read from the vault
+# (/vault add <name>), so tokens never live in this file or in .env.
+#
+# Composio (Gmail, Calendar, Notion, ...) is used through its MCP endpoint:
+# create an MCP server at https://app.composio.dev with the apps you want,
+# then add its URL and your API key (in the vault) here.
+
+servers: {}
+
+# servers:
+#   composio:
+#     url: https://backend.composio.dev/v3/mcp/<server-id>/mcp?user_id=<you>
+#     headers:
+#       x-api-key: vault:composio
+#     default: ask
+#     tools:
+#       GMAIL_FETCH_EMAILS: read
+#       GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID: read
+#       GOOGLECALENDAR_FIND_EVENT: read
+#       NOTION_SEARCH_NOTION_PAGE: read
+#       GMAIL_SEND_EMAIL: write
+#       GMAIL_REPLY_TO_THREAD: write
+#       GOOGLECALENDAR_CREATE_EVENT: write
+#
+#   # A local stdio server runs inside the agent container with a minimal
+#   # environment (no API keys) plus only the env listed here.
+#   time:
+#     command: uvx
+#     args: [mcp-server-time]
+#     tools:
+#       get_current_time: read

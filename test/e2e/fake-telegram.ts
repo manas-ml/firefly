@@ -60,6 +60,7 @@ export class FakeTelegram {
   readonly sent: SentMessage[] = [];
   readonly callbackAnswers: { id: string; text?: string }[] = [];
   readonly chatActions: { chatId: number; action: string }[] = [];
+  readonly photos: { chatId: number; caption: string; bytes: number }[] = [];
   private updates: Update[] = [];
   private nextUpdateId = 1;
   private nextMessageId = 1000;
@@ -133,8 +134,16 @@ export class FakeTelegram {
     const m = req.url?.match(/^\/bot([^/]+)\/(\w+)/);
     const chunks: Buffer[] = [];
     for await (const c of req) chunks.push(c as Buffer);
-    const raw = Buffer.concat(chunks).toString("utf8");
-    const body = (raw ? JSON.parse(raw) : {}) as Record<string, unknown>;
+    const rawBuf = Buffer.concat(chunks);
+    const contentType = req.headers["content-type"] ?? "";
+    let body: Record<string, unknown> = {};
+    if (contentType.startsWith("multipart/form-data")) {
+      // grammY uploads files (sendPhoto) as multipart.
+      body = parseMultipart(rawBuf, contentType);
+    } else {
+      const raw = rawBuf.toString("utf8");
+      body = (raw ? JSON.parse(raw) : {}) as Record<string, unknown>;
+    }
     const reply = (status: number, payload: unknown) => {
       res.writeHead(status, { "content-type": "application/json" });
       res.end(JSON.stringify(payload));
@@ -219,6 +228,13 @@ export class FakeTelegram {
         if (target) target.deleted = true;
         return ok(true);
       }
+      case "sendPhoto": {
+        let photo = body.photo as { size?: number } | string | undefined;
+        if (typeof photo === "string" && photo.startsWith("attach://")) photo = body[photo.slice(9)] as { size?: number } | undefined;
+        this.photos.push({ chatId: Number(body.chat_id), caption: String(body.caption ?? ""), bytes: typeof photo === "object" ? (photo.size ?? 0) : 0 });
+        const messageId = this.nextMessageId++;
+        return ok({ message_id: messageId, date: 0, chat: { id: Number(body.chat_id), type: "private" }, photo: [] });
+      }
       case "sendChatAction":
         this.chatActions.push({ chatId: Number(body.chat_id), action: String(body.action) });
         return ok(true);
@@ -229,4 +245,29 @@ export class FakeTelegram {
         return fail(`Bad Request: method ${method} not implemented in fake`);
     }
   }
+}
+
+/** Minimal multipart/form-data parser: text fields as strings, files as { size }. */
+function parseMultipart(buf: Buffer, contentType: string): Record<string, unknown> {
+  const boundary = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+  const b = boundary?.[1] ?? boundary?.[2];
+  if (!b) return {};
+  const out: Record<string, unknown> = {};
+  const delim = Buffer.from(`--${b}`);
+  let pos = buf.indexOf(delim);
+  while (pos !== -1) {
+    const start = pos + delim.length;
+    const next = buf.indexOf(delim, start);
+    if (next === -1) break;
+    const part = buf.subarray(start, next);
+    const headerEnd = part.indexOf("\r\n\r\n");
+    if (headerEnd !== -1) {
+      const headers = part.subarray(0, headerEnd).toString();
+      const content = part.subarray(headerEnd + 4, part.length - 2); // trailing CRLF
+      const name = headers.match(/name="([^"]+)"/)?.[1];
+      if (name) out[name] = /filename=/.test(headers) ? { size: content.length } : content.toString();
+    }
+    pos = next;
+  }
+  return out;
 }

@@ -62,25 +62,29 @@ describe("Phase 2: routines", () => {
 
   it("fires on time from the cron schedule, in a fresh session, and pushes the result", async () => {
     // A routine created directly (as the approved tool would) that fires every minute.
-    const s = await h.app.scheduler.create({ chatId: OWNER, name: "minutely", cron: "* * * * *", prompt: "Say the time." });
+    // pg-boss may fire a schedule created mid-minute for the current minute right away,
+    // so timing is checked on the second firing, which must land on a minute boundary.
     let history = "";
-    h.faux.faux.setResponses([
-      (ctx) => {
-        history = JSON.stringify(ctx.messages);
-        return reply("It is time.");
-      },
-    ]);
+    const fires: Date[] = [];
+    const step = (ctx: { messages: unknown[] }) => {
+      history = JSON.stringify(ctx.messages);
+      fires.push(new Date());
+      return reply(`It is time (${fires.length}).`);
+    };
+    h.faux.faux.setResponses([step, step, step]);
     const from = h.tg.sent.length;
-    const msg = await h.tg.waitForMessage((m) => m.text.includes("It is time."), 75_000, from);
-    expect(msg.text).toContain("🔁 minutely");
-    const fired = new Date();
-    expect(fired.getUTCSeconds()).toBeLessThan(15); // fired right after the minute boundary
+    const s = await h.app.scheduler.create({ chatId: OWNER, name: "minutely", cron: "* * * * *", prompt: "Say the time." });
+    await h.tg.waitForMessage((m) => m.text.includes("It is time (1)."), 75_000, from);
+    const second = await h.tg.waitForMessage((m) => m.text.includes("It is time (2)."), 75_000, from);
+    await h.app.scheduler.setEnabled(s.id, false);
+    expect(second.text).toContain("🔁 minutely");
+    expect(fires[1]!.getUTCSeconds()).toBeLessThan(10); // within seconds of hh:mm:00
     expect(history).toContain('This is your scheduled routine \\"minutely\\"');
     expect(history).not.toContain("Every weekday at 8am"); // not the chat's conversation
-    const task = (await h.db.pool.query("SELECT kind, status, schedule_id FROM tasks WHERE schedule_id = $1", [s.id])).rows[0];
-    expect(task).toMatchObject({ kind: "routine", status: "done" });
-    await h.app.scheduler.setEnabled(s.id, false);
-  }, 90_000);
+    const tasks = (await h.db.pool.query("SELECT kind, status FROM tasks WHERE schedule_id = $1", [s.id])).rows;
+    expect(tasks.length).toBeGreaterThanOrEqual(2);
+    expect(tasks.every((t: { kind: string; status: string }) => t.kind === "routine" && t.status === "done")).toBe(true);
+  }, 160_000);
 
   it("a routine with nothing to report sends nothing", async () => {
     h.faux.faux.setResponses([reply("NO_REPORT")]);

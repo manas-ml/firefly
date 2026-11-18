@@ -99,7 +99,7 @@ export class SandboxClient {
    * Run a command. Aborting `signal` asks the sandbox to kill the whole process
    * group; the returned promise then resolves with `cancelled: true`.
    */
-  async exec(input: { command: string; cwd?: string; timeoutSec: number; signal?: AbortSignal }): Promise<ExecResult> {
+  async exec(input: { command: string; cwd?: string; timeoutSec: number; signal?: AbortSignal; env?: Record<string, string> }): Promise<ExecResult> {
     const execId = randomUUID();
     if (input.signal?.aborted) {
       return { execId, exitCode: null, stdout: "", stderr: "", timedOut: false, cancelled: true };
@@ -114,6 +114,7 @@ export class SandboxClient {
         command: input.command,
         cwd: input.cwd,
         timeoutSec: input.timeoutSec,
+        ...(input.env ? { env: input.env } : {}),
       });
     } finally {
       input.signal?.removeEventListener("abort", onAbort);
