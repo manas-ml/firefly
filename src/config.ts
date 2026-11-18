@@ -1,14 +1,14 @@
 import { z } from "zod";
 
-const intFromEnv = (def: number) =>
+const intFromEnv = (def: number, min = 1) =>
   z
     .string()
     .optional()
     .transform((v, ctx) => {
       if (v === undefined || v.trim() === "") return def;
       const n = Number(v);
-      if (!Number.isInteger(n) || n <= 0) {
-        ctx.addIssue({ code: "custom", message: `must be a positive integer, got "${v}"` });
+      if (!Number.isInteger(n) || n < min) {
+        ctx.addIssue({ code: "custom", message: `must be an integer >= ${min}, got "${v}"` });
         return z.NEVER;
       }
       return n;
@@ -49,7 +49,7 @@ const schema = z.object({
   TZ: z.string().default("America/Toronto"),
   // Not in the user-facing .env; defaults suit the Docker setup.
   HTTP_HOST: z.string().default("0.0.0.0"),
-  HTTP_PORT: intFromEnv(8080),
+  HTTP_PORT: intFromEnv(8080, 0),
   DATA_DIR: z.string().default("/data"),
   POLICY_FILE: z.string().default("config/policy.yaml"),
   WORKSPACE_DIR: z.string().default("/workspace"),
